@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Zeus.Community.Pw2Bridge.Harness</RootNamespace>
+    <AssemblyName>pw2civ</AssemblyName>
+    <!-- Windows-first: serial ships in this package. -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Reference the SAME source files the plugin uses, so a fix here is a fix
+         in the plugin. Linked (not copied) from ../../src/Pw2Bridge. -->
+    <Compile Include="../../src/Pw2Bridge/Pw2CivProtocol.cs" Link="shared/Pw2CivProtocol.cs" />
+    <Compile Include="../../src/Pw2Bridge/BandPlan.cs"       Link="shared/BandPlan.cs" />
+    <Compile Include="../../src/Pw2Bridge/Pw2CivSerial.cs"   Link="shared/Pw2CivSerial.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.IO.Ports" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="9.0.0" />
+  </ItemGroup>
+
+</Project>

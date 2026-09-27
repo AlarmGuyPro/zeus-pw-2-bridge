@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- SPDX-License-Identifier: GPL-2.0-or-later -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>Zeus.Community.Pw2Bridge</AssemblyName>
+    <RootNamespace>Zeus.Community.Pw2Bridge</RootNamespace>
+    <IsPackable>false</IsPackable>
+
+    <!-- Bundle System.IO.Ports beside the plugin (packaged via
+         build-package.ps1 -ManagedDependency System.IO.Ports.dll). -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+
+    <!-- Windows-first release. Building for win-x64 makes NuGet copy the real
+         Windows System.IO.Ports implementation (not the platform-neutral stub)
+         flat into bin/Release/net10.0, which is where the catalog's unmodified
+         build-package.ps1 looks for it. Framework-dependent: Zeus supplies
+         the .NET runtime. -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+
+    <!-- Reproducible restores: commit packages.lock.json with the source. -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="../../sdk/Openhpsdr.Zeus.Plugins.Contracts/Zeus.Plugins.Contracts.csproj"
+                      Private="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.IO.Ports" Version="9.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="plugin.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "com.kq4wlr.zeus.pw2bridge",
+  "name": "IC-PW2 Bridge",
+  "version": "1.0.0",
+  "author": "KQ4WLR",
+  "description": "Control and monitoring for the Icom IC-PW2 linear amplifier over CI-V serial, with automatic band-follow driven by Zeus radio state. Displays output power, SWR, ALC, drain voltage/current, temperature, humidity, and protection status.",
+  "homepage": "https://github.com/AlarmGuyPro/zeus-pw-2-bridge",
+  "license": "GPL-2.0-or-later",
+  "sdk": { "abi": 1, "minVersion": "1.5.0" },
+  "entrypoint": {
+    "assembly": "Zeus.Community.Pw2Bridge.dll",
+    "type": "Zeus.Community.Pw2Bridge.Pw2BridgePlugin"
+  },
+  "capabilities": ["ReadRadioState", "PersistSettings"],
+  "permissions": {
+    "network": false,
+    "fileSystemRead": false,
+    "fileSystemWrite": false
+  },
+  "ui": {
+    "modules": ["ui/pw2bridge.es.js"],
+    "panels": [
+      {
+        "id": "pw2bridge.main",
+        "title": "IC-PW2",
+        "icon": "Zap",
+        "slot": "workspace.amplifier",
+        "category": "amplifiers"
+      }
+    ]
+  }
+}
