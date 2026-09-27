@@ -6,7 +6,7 @@ Zeus's radio state.
 
 - **Plugin ID:** `com.kq4wlr.zeus.pw2bridge`
 - **Author:** KQ4WLR
-- **Current version:** 1.0.0 (first catalog submission)
+- **Current version:** 1.0.0 (submitted to the catalog, PR #8, 2026-09-27)
 - **SDK:** ABI 1, minVersion 1.5.0
 - **Platform:** Windows (win-x64) first; Linux/Pi possible later (see Porting)
 - **License intent:** GPL-2.0-or-later
@@ -15,6 +15,131 @@ This document is the durable record. If you return after a gap, publish it, or
 hand it to someone else, read this first. It captures not just *what* the code
 does but *why* — especially the CI-V quirks that were discovered on real
 hardware and would be easy to "fix" back into bugs.
+
+---
+
+## 0. Status and how to pick up (read first)
+
+**If you are an assistant picking this up:** read this section, then §2
+(Architecture) and §3 (CI-V notes) before changing code. The operator (KQ4WLR)
+is new to git/GitHub, so give copy-paste steps and do the git work yourself
+where the session allows.
+
+### Where everything lives
+
+| What | Where |
+|---|---|
+| Plugin source (this repo, public) | https://github.com/AlarmGuyPro/zeus-pw-2-bridge (branch `main`) |
+| Released 1.0.0 ZIP (intake copy) | https://github.com/AlarmGuyPro/zeus-pw-2-bridge/releases/tag/v1.0.0 |
+| Catalog fork (for listing PRs) | https://github.com/AlarmGuyPro/zeus-community-features |
+| Official catalog | https://github.com/Zeus-SDR/zeus-community-features (read its `CONTRIBUTING.md`) |
+| 1.0.0 listing PR | https://github.com/Zeus-SDR/zeus-community-features/pull/8 |
+| Operator's local clone | `C:\zeus-pw-2-bridge` (build outputs in `artifacts\`) |
+| Operator's catalog clone | `C:\zcf` (used to run the catalog's required checks) |
+| Screenshots used as PR evidence | `docs/screenshots/` |
+
+GitHub account: **AlarmGuyPro**. There is also a separate, unrelated private
+repo, `AlarmGuyPro/KQ4WLR-Bridger`; don't mix them up.
+
+### Release history
+
+| Version | Date | SHA-256 of ZIP | Catalog PR | State |
+|---|---|---|---|---|
+| 1.0.0 | 2026-09-27 | `7b29ca283575b7d0cca903e72c5087c8c9bdecfe44ab91243ed221dc756c361f` | #8 | Open, awaiting maintainer review/custody |
+
+Update this table on every release and when a PR merges.
+
+### Operator's PC toolchain (already installed)
+
+.NET 10 SDK, PowerShell 7 (`pwsh`, "PowerShell 7" in the Start menu, not the
+blue Windows PowerShell), Git, and Node.js LTS. Hardware: Windows 11 x64, Zeus
+(WDSP 2.10 or later), IC-PW2 on **COM10 @ 19200** (amp CI-V set explicitly to
+19200, not Auto), CI-V address `AA`.
+
+### Making a change, step by step (the proven path)
+
+1. **Get current code.** In PowerShell 7: `cd C:\zeus-pw-2-bridge; git pull`.
+   Or the assistant clones `AlarmGuyPro/zeus-pw-2-bridge`, edits, and pushes
+   to `main`, and the operator then runs `git pull`.
+2. **Edit** the code in `src/Pw2Bridge/`. For protocol changes, prove them first
+   with the harness (§6).
+3. **Bump the version in both places, identically:**
+   - `src/Pw2Bridge/plugin.json`: `"version"`
+   - `src/Pw2Bridge/Pw2BridgePlugin.cs`: `ManifestVersion`
+
+   Use SemVer: fixes → 1.0.1, new features → 1.1.0. Never reuse a released number.
+4. **Self-test and build** (PowerShell 7, in `C:\zeus-pw-2-bridge`):
+   ```
+   dotnet run --project tools/Pw2CivHarness -- selftest
+   pwsh src/Pw2Bridge/build-package.ps1 -ManagedDependency System.IO.Ports.dll
+   ```
+   The ZIP and `.sha256` are written to `artifacts\com.kq4wlr.zeus.pw2bridge\`.
+5. **Test in Zeus:** remove the old feature, then Features → Community → Install
+   local feature → the new ZIP → Ctrl+F5. Confirm the Settings footer shows the
+   new version, then test on the amp.
+6. **If the UI changed,** retake the affected screenshots (dark and light,
+   narrow, 200% scaling, keyboard focus, TX, disconnected, as needed), add them
+   to `docs/screenshots/`, and commit.
+7. **Commit and push** any source changes, including an updated
+   `packages.lock.json` if the build changed it.
+8. **Create the GitHub Release** in the web UI (the assistant's session cannot
+   create releases or tags):
+   - Go to Releases → Draft new release.
+   - Tag: **`v<version>`**, lowercase v, created on `main`.
+   - Title: `IC-PW2 Bridge <version>`.
+   - Attach **the exact ZIP you tested**. Don't rebuild after testing, or the
+     hash changes.
+   - Publish. Never edit or replace an asset once published.
+9. **The assistant verifies** the release by downloading the ZIP from the
+   release URL and checking that the SHA-256 matches the `.sha256` file.
+10. **Catalog PR** (the assistant can do the branch, the operator opens the PR):
+    - In the fork, sync `main` with upstream first. On GitHub, "Sync fork" on
+      the fork's page.
+    - Create branch `community/com.kq4wlr.zeus.pw2bridge-<version>` from
+      upstream `main`.
+    - Edit **only** `registry.json`: add a new object at the **top** of
+      `versions` for `com.kq4wlr.zeus.pw2bridge` (newest first; keep 1.0.0
+      untouched), and update the top-level `generated` timestamp (UTC).
+    - `downloadUrl` is always the Zeus-SDR custody form:
+      `https://github.com/Zeus-SDR/zeus-community-features/releases/download/community-com.kq4wlr.zeus.pw2bridge-v<version>/com.kq4wlr.zeus.pw2bridge-<version>.zip`
+    - The operator runs the required checks from `C:\zcf` on that branch (the
+      command block in CONTRIBUTING §7; `validate-package.ps1` points at the
+      new ZIP).
+    - Commit message and PR title: `feat(registry): release com.kq4wlr.zeus.pw2bridge <version>`.
+    - PR body: follow the template and PR #8's body (intake URL, SHA-256,
+      custody URL, capabilities, validation evidence, screenshots). **No
+      mention of AI tools in the catalog repo's commits or PR text**; that
+      repo's `AGENTS.md` forbids it.
+11. **After merge:** Zeus shows the update in Features → Community within about
+    5 minutes. Update the release history table above.
+
+### Things that bit us (don't repeat)
+
+- The catalog's `build-package.ps1` must stay **byte-for-byte unmodified**, and
+  it must sit two folders below the repo root (`src/Pw2Bridge/`). The csproj
+  builds for `win-x64` with `AppendRuntimeIdentifierToOutputPath=false` so the
+  real Windows `System.IO.Ports.dll` lands where the script looks.
+- UI class names must go through `pcls()` (feature prefix). The gauge code
+  already has SVG variables named `cx`/`cy`, so never name a helper `cx`.
+- Git on Windows rewrites text files with CRLF inside the ZIP. That's harmless;
+  compare content, not bytes, when checking ZIP vs repo.
+- GitHub's "Create README" starter file on a new repo gets in the way of the
+  first push; resolve it by keeping our README.
+- Catalog CI stays red on the package-download check until a maintainer runs
+  custody. That is expected, and not something to fix.
+- The first PR from a new contributor needs a maintainer to click "Approve and
+  run" before CI runs.
+
+### Open items
+
+- PR #8: waiting for maintainer review → custody → merge. Reply to any review
+  comments on the same branch (push fixes to it; don't open a new PR).
+- Light theme: `--ok` green text on pills and buttons is low-contrast (it comes
+  from Zeus's own tokens). Adjust only if a reviewer asks.
+- Protection-fault and overheat banners have never been captured on hardware.
+  Grab a screenshot if one ever occurs naturally.
+- Drive-level interlock: waiting for the SDK to expose drive to plugins.
+- Linux/Pi packaging: see §9.
 
 ---
 
@@ -237,7 +362,7 @@ add an empty Multi Panel from the + picker and drop the IC-PW2 into it.
 
 ---
 
-## 7. Publishing to the community catalog (when ready)
+## 7. Publishing to the community catalog (original notes; §0 has the proven steps)
 
 From CONTRIBUTING.md (current SDK). The catalog PR changes only `registry.json`;
 the ZIP is stored as an immutable Zeus-SDR release asset created by a maintainer.
@@ -293,8 +418,8 @@ manifest verified, ABI compatibility, archive-safety. Nothing lands unverified.
 - ANT6 reads blank on the author's amp because it's genuinely unnamed — the
   UI falls back to "ANT n" for blank names. Correct behavior.
 - Overheat default 120 F is a starting guess; tune after real operating.
-- Not yet done: Linux/Pi packaging; publishing; any changes from the author's
-  multi-day live test.
+- Published: 1.0.0 submitted as catalog PR #8 (see §0). Not yet done:
+  Linux/Pi packaging.
 
 ## 9. Porting to Linux / Raspberry Pi (future)
 
