@@ -28,7 +28,7 @@ namespace Zeus.Community.Pw2Bridge;
 public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
 {
     // Human-readable version; keep in sync with plugin.json "version".
-    private const string ManifestVersion = "1.0.0";
+    private const string ManifestVersion = "1.1.0";
 
     private IPluginContext? _ctx;
     private ILogger? _log;
@@ -42,7 +42,7 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
     private Telemetry _telemetry = new();
     private string? _detectedBand;     // last band Zeus told us about
     private string? _pendingBand;      // band deferred because TX was active
-    private string _lastForwardedBand = "";
+    private volatile string _lastForwardedBand = "";
     private volatile bool _tx;
 
     private CancellationTokenSource? _pollCts;
@@ -58,7 +58,7 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
         _log = context.Logger;
         _amp = new Pw2CivSerial(context.Logger);
 
-        _cfg = await LoadSettingsAsync(context.Settings, ct);
+        _cfg = Sanitize(await LoadSettingsAsync(context.Settings, ct));
         _amp.SetPw2Addr(Convert.ToInt32(_cfg.Pw2AddrHex, 16));
 
         // Log exactly what the host granted, to distinguish "not declared" from
@@ -96,10 +96,20 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
     }
 
     // ── radio-state handlers (band-follow) ───────────────────────────────────
-
-    private long _lastLoggedHz;
+    //
+    // Zeus raises FrequencyChanged / MoxChanged synchronously on the thread that
+    // delivers ALL radio state, so these handlers must never block. They only
+    // record the new value and wake the poll loop; every CI-V round trip that
+    // results (band set, 60 m STBY, deferred band on TX drop) happens on the
+    // poll thread in ProcessRadioEvents(). That also means the interlock state
+    // (_forced60mStby, _pendingBand, band bookkeeping) is only driven from one
+    // thread.
 
     private bool _radioAttached;
+    private long _latestHz;          // written by FrequencyChanged (Interlocked)
+    private int _freqDirty;          // 1 = a new frequency is waiting (Interlocked)
+    private bool _txSeen;            // poll-thread copy of _tx, for edge detection
+    private long _lastLoggedHz;      // poll thread only
 
     private void AttachRadio(IRadioStateReader radio)
     {
@@ -112,12 +122,40 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
         OnFrequencyChanged(radio.FrequencyHz); // prime with current band
     }
 
-    private bool _forced60mStby;               // holding the amp in STBY for 60M-NEW
-    private string _stateBefore60m = "STBY";   // amp state to restore when leaving
-    private bool _overheatLatched;             // holding STBY due to overheat (manual clear)
+    private volatile bool _forced60mStby;      // holding the amp in STBY for 60M-NEW
+    private volatile bool _overheatLatched;    // holding STBY due to overheat (manual clear)
     private readonly string[] _antNames = new string[6]; // cached ANT 1..6 names
 
+    // Zeus radio-state callbacks: record and signal only. No serial I/O here.
     private void OnFrequencyChanged(long hz)
+    {
+        Interlocked.Exchange(ref _latestHz, hz);
+        Interlocked.Exchange(ref _freqDirty, 1);
+        _pollWake.Set();
+    }
+
+    private void OnMoxChanged(bool tx)
+    {
+        _tx = tx;          // visible immediately to the endpoints' TX locks
+        _pollWake.Set();   // fast poll on key-up; deferred band on key-down
+    }
+
+    /// <summary>Poll thread: act on any radio-state change recorded since the last cycle.</summary>
+    private void ProcessRadioEvents()
+    {
+        bool tx = _tx;
+        if (tx != _txSeen)
+        {
+            bool dropped = _txSeen && !tx;
+            _txSeen = tx;
+            if (dropped) ApplyPendingBand();
+        }
+
+        if (Interlocked.Exchange(ref _freqDirty, 0) == 1)
+            HandleFrequency(Interlocked.Read(ref _latestHz));
+    }
+
+    private void HandleFrequency(long hz)
     {
         var band = BandPlan.FromHz(hz);
         lock (_stateGate) _detectedBand = band;
@@ -129,87 +167,83 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
             Note("info", $"Radio freq → {hz} Hz ({BandPlan.Display(band) ?? "out-of-band"}).");
         }
 
-        if (!_cfg.BandFollow || band is null) return;
-
         // 60m low-power sub-band (5351.5–5366.5 kHz): FCC power limits mean the
-        // amp must not amplify here. Actively force STBY on entry and hold it,
-        // then restore the prior state on exit — not just "skip forwarding."
+        // amp must not amplify here. This interlock runs whether or not
+        // band-follow is enabled. Force STBY once on entry; the poll loop then
+        // re-asserts it every cycle while we stay here.
         if (BandPlan.Is60mLowPower(band))
         {
             if (!_forced60mStby)
             {
-                var st = _amp is { IsConnected: true } ? _amp.ReadAmpCircuit() : null;
-                _stateBefore60m = st == 1 ? "OPER" : "STBY";
                 _forced60mStby = true;
+                _lastForwardedBand = "";
+                Note("bridge", "Entered 60M-NEW — holding amp in STBY (FCC power limit).");
+                Enforce60mStby();
             }
-            Force60mStby();
             return;
         }
 
-        // Leaving 60M-NEW → restore the amp to its pre-60m state.
+        // Leaving 60M-NEW: automatic actions only ever move the amp toward STBY,
+        // so it stays in STBY and the operator presses OPER when ready.
         if (_forced60mStby)
         {
             _forced60mStby = false;
-            if (_stateBefore60m == "OPER" && _amp is { IsConnected: true })
-            {
-                var (ok, msg) = _amp.SetAmpCircuit(true);
-                if (ok) lock (_stateGate) _telemetry.AmpState = "OPER";
-                Note(ok ? "civ" : "warn", $"Left 60M-NEW — restored OPER: {(ok ? "OK" : "FAIL")} {msg}");
-            }
-            else
-            {
-                Note("bridge", "Left 60M-NEW — amp remains STBY.");
-            }
+            Note("bridge", "Left 60M-NEW — amp stays in STBY; press OPER when ready.");
         }
 
+        if (!_cfg.BandFollow || band is null) return;
+        RequestBand(band);
+    }
+
+    /// <summary>Poll thread: send STBY for the 60 m sub-band (read first to avoid a needless write).</summary>
+    private void Enforce60mStby()
+    {
+        if (_amp is not { IsConnected: true }) return; // re-asserted by the poll loop once connected
+        var st = _amp.ReadAmpCircuit();
+        if (st != 0) // OPER, or unknown — STBY is always the safe write
+        {
+            var (ok, msg) = _amp.SetAmpCircuit(false);
+            Note(ok ? "civ" : "warn", $"60M-NEW: forcing STBY (FCC power limit): {(ok ? "OK" : "FAIL")} {msg}");
+        }
+        lock (_stateGate) _telemetry.AmpState = "STBY";
+    }
+
+    /// <summary>
+    /// Poll thread: forward a band to the amp, or defer it while transmitting so
+    /// the band relays never switch under RF.
+    /// </summary>
+    private void RequestBand(string band)
+    {
         if (!BandPlan.IsAmpSupported(band))
         {
             // Normal 60m channels / out-of-amp-range: no CI-V band code, and no
             // low-power restriction — leave the amp as-is.
+            lock (_stateGate) _pendingBand = null;
             return;
         }
-        if (band == _lastForwardedBand) return;
-
+        if (band == _lastForwardedBand)
+        {
+            lock (_stateGate) _pendingBand = null; // e.g. tuned away and back during TX
+            return;
+        }
         if (_tx && _cfg.TxInhibit)
         {
             lock (_stateGate) _pendingBand = band;
             Note("bridge", $"Deferring band → {band} (TX active).");
             return;
         }
+        lock (_stateGate) _pendingBand = null;
         ForwardBand(band);
     }
 
-    private void Force60mStby()
+    /// <summary>Poll thread: on TX drop, apply the band change deferred during TX.</summary>
+    private void ApplyPendingBand()
     {
-        if (_amp is not { IsConnected: true }) return;
-        if (_amp.ReadAmpCircuit() == 1) // currently OPER — drop it
-        {
-            var (ok, msg) = _amp.SetAmpCircuit(false);
-            Note(ok ? "civ" : "warn", $"60M-NEW: forcing STBY (FCC power limit): {(ok ? "OK" : "FAIL")} {msg}");
-        }
-        lock (_stateGate) _telemetry.AmpState = "STBY";
-        _lastForwardedBand = "";
-    }
-
-    private void OnMoxChanged(bool tx)
-    {
-        bool rising = tx && !_tx;
-        _tx = tx;
-
-        // On TX drop, apply any band change we deferred.
-        if (!tx)
-        {
-            string? pending;
-            lock (_stateGate) { pending = _pendingBand; _pendingBand = null; }
-            if (pending is not null)
-            {
-                Note("bridge", $"TX dropped — applying deferred band {pending}.");
-                ForwardBand(pending);
-            }
-        }
-
-        // On TX rising edge, poke a fast poll so SWR/Po update quickly.
-        if (rising) _pollWake.Set();
+        string? pending;
+        lock (_stateGate) { pending = _pendingBand; _pendingBand = null; }
+        if (pending is null || _forced60mStby) return;
+        Note("bridge", $"TX dropped — applying deferred band {pending}.");
+        ForwardBand(pending);
     }
 
     private void ForwardBand(string band)
@@ -221,7 +255,7 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
         }
         int live = _amp.ReadRfInput() ?? _cfg.RfInput;
         var (ok, msg) = _amp.SetBand(band, live);
-        _lastForwardedBand = ok ? band : _lastForwardedBand;
+        if (ok) _lastForwardedBand = band;
         Note(ok ? "civ" : "warn", $"Band → {BandPlan.Display(band)}: {(ok ? "OK" : "FAIL")} {msg}");
     }
 
@@ -283,38 +317,59 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
     {
         while (!token.IsCancellationRequested)
         {
+            // Reset BEFORE doing the work, so a Set() from a radio callback that
+            // lands mid-cycle stays pending and the Wait() below returns at once.
+            _pollWake.Reset();
+
             // If the host didn't expose radio state at init, keep watching for it
             // (it can appear once the operator connects a radio in Zeus).
             if (!_radioAttached && _ctx?.Radio is { } lateRadio)
                 AttachRadio(lateRadio);
 
-            int interval = _tx ? _cfg.PollMsTx : _cfg.PollMsIdle;
+            try { ProcessRadioEvents(); }
+            catch (Exception ex) { Note("warn", $"radio-event error: {ex.Message}"); }
+
             var amp = _amp;
+
+            // Post-connect settle (manual connect or auto-recovery alike).
+            if (amp is { IsConnected: true } && SettleDue())
+            {
+                try { OnLinkSettled(); }
+                catch (Exception ex) { Note("warn", $"post-connect error: {ex.Message}"); }
+            }
+
+            int interval = _tx ? _cfg.PollMsTx : _cfg.PollMsIdle;
 
             if (amp is { IsConnected: true })
             {
                 try
                 {
                     // Read OUTSIDE the state lock (each CI-V round-trip can take up
-                    // During TX we want Po/SWR/ALC as fast as the serial link
-                    // allows — nothing else. Each extra CI-V round-trip (temp,
-                    // humidity, antenna, tuner, ...) at 9600 baud steals tens of ms
-                    // from the meters that actually matter mid-transmission. So on
-                    // TX, read only the three power meters and skip the rest; the
-                    // slow/medium reads resume the moment TX drops.
+                    // to ~150 ms). During TX we want Po/SWR/ALC as fast as the
+                    // serial link allows, so the slow/medium reads (humidity,
+                    // antenna, tuner, ...) pause until TX drops. The safety reads
+                    // do NOT pause: temperature and amp state are read about once a
+                    // second during TX, because a long transmission is exactly when
+                    // the amp heats up and the overheat interlock must be looking.
                     bool txNow = _tx;
                     bool slow = !txNow && _pollTick % 4 == 0;
                     bool med  = !txNow && _pollTick % 2 == 0;
+                    int txSafetyEvery = Math.Max(1, 1000 / Math.Max(100, _cfg.PollMsTx));
+                    bool txSafety = txNow && _pollTick % txSafetyEvery == 0;
+
+                    // While an interlock is holding STBY, read the amp state every
+                    // cycle so a front-panel OPER press is corrected immediately.
+                    bool holding = _forced60mStby || _overheatLatched;
 
                     int? po = amp.ReadPoWatts();
                     double? swr = amp.ReadSwr();
                     int? alc = amp.ReadAlcPercent();
                     double? vd = med ? amp.ReadVolts() : null;
                     double? id = med ? amp.ReadAmps() : null;
-                    int? ampSt = slow ? amp.ReadAmpCircuit() : null;
+                    int? ampSt = (slow || txSafety || holding) ? amp.ReadAmpCircuit() : null;
                     string? prot = slow ? amp.ReadProtection() : null;
                     int? hum = slow ? amp.ReadHumidity() : null;
-                    double? tempC = slow ? amp.ReadTemperatureC() : null;
+                    double? tempC = (slow || txSafety) ? amp.ReadTemperatureC() : null;
                     int? rfIn = slow ? amp.ReadRfInput() : null;
                     int? ant = null;
                     string? antName = null;
@@ -333,48 +388,60 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
 
                     // On a STBY→OPER transition, refresh the antenna names (cheap,
                     // event-driven; names can change if the operator re-labels).
-                    if (ampSt == 1 && _prevAmpState == 0)
+                    if (ampSt == 1 && _prevAmpState == 0 && !txNow)
                         ReadAllAntennaNames();
                     if (ampSt.HasValue) _prevAmpState = ampSt.Value;
 
                     // "always" mode: if the amp just became reachable (front-panel
                     // power-on), force STBY. ("connect" mode handles the link-gain
                     // case in ApplyDefaultStbyOnConnect; "off" does nothing.)
-                    bool reachableNow = ampSt.HasValue || tempC.HasValue || rfIn.HasValue;
-                    if (_cfg.DefaultStby == "always" && reachableNow && !_prevReachable
-                        && !_forced60mStby && !_overheatLatched && ampSt == 1)
+                    // Evaluated on slow cycles only — the status reads that define
+                    // "reachable" are skipped on the other cycles, and treating
+                    // those as "unreachable" would fake a power-on edge.
+                    if (slow)
                     {
-                        var (ok, _) = amp.SetAmpCircuit(false);
-                        Note(ok ? "civ" : "warn", "Default-to-STBY (always): amp powered on → STBY.");
+                        bool reachableNow = ampSt.HasValue || tempC.HasValue || rfIn.HasValue;
+                        if (_cfg.DefaultStby == "always" && reachableNow && !_prevReachable
+                            && !_forced60mStby && !_overheatLatched && ampSt == 1)
+                        {
+                            var (ok, _) = amp.SetAmpCircuit(false);
+                            if (ok) ampSt = 0;
+                            Note(ok ? "civ" : "warn", "Default-to-STBY (always): amp powered on → STBY.");
+                        }
+                        _prevReachable = reachableNow;
                     }
-                    _prevReachable = reachableNow;
 
                     // Enforce 60M-NEW STBY if the amp drifted to OPER (front panel).
                     if (_forced60mStby && ampSt == 1)
                     {
                         var (ok, _) = amp.SetAmpCircuit(false);
+                        if (ok) ampSt = 0;
                         Note(ok ? "civ" : "warn", "60M-NEW: re-asserting STBY (amp was OPER).");
                     }
 
                     // Overheat protection: if temperature reaches the configured max,
                     // force STBY and latch it. Stays in STBY until the operator
-                    // manually re-enables (does NOT auto-restore on cool-down).
+                    // manually presses STBY (does NOT auto-restore on cool-down).
+                    // Checked during TX too (see the txSafety cadence above).
                     if (tempC.HasValue)
                     {
                         double tempForCompare = _cfg.TempUnit == "C" ? tempC.Value : Pw2Civ.CToF(tempC.Value);
-                        if (tempForCompare >= _cfg.MaxTemp)
+                        if (tempForCompare >= _cfg.MaxTemp && !_overheatLatched)
                         {
-                            if (!_overheatLatched)
-                            {
-                                _overheatLatched = true;
-                                if (ampSt == 1) amp.SetAmpCircuit(false);
-                                Note("warn", $"OVERHEAT {tempForCompare:F1}°{_cfg.TempUnit} ≥ {_cfg.MaxTemp}°{_cfg.TempUnit} — forced STBY, latched.");
-                            }
-                            else if (ampSt == 1)
-                            {
-                                amp.SetAmpCircuit(false); // hold STBY while latched
-                            }
+                            _overheatLatched = true;
+                            // Send STBY unconditionally: on a TX cycle the amp state
+                            // may not have been read, and STBY is always safe.
+                            var (ok, _) = amp.SetAmpCircuit(false);
+                            if (ok) ampSt = 0;
+                            Note("warn", $"OVERHEAT {tempForCompare:F1}°{_cfg.TempUnit} ≥ {_cfg.MaxTemp}°{_cfg.TempUnit} — forced STBY ({(ok ? "OK" : "FAIL")}), latched.");
                         }
+                    }
+                    // Hold STBY while latched (e.g. a front-panel OPER press).
+                    if (_overheatLatched && ampSt == 1)
+                    {
+                        var (ok, _) = amp.SetAmpCircuit(false);
+                        if (ok) ampSt = 0;
+                        Note(ok ? "civ" : "warn", "Overheat latch: re-asserting STBY (amp was OPER).");
                     }
 
                     lock (_stateGate)
@@ -395,9 +462,6 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
                         if (ant.HasValue) t.ActiveAntenna = ant.Value;
                         if (antName != null) t.ActiveAntennaName = antName;
                         if (tuner.HasValue) t.TunerState = tuner.Value;
-                        // If we're holding 60M-NEW and the amp reads OPER (e.g. the
-                        // front-panel OPER was pressed), mark it for correction below.
-                        if (_forced60mStby && ampSt == 1) t.AmpState = "STBY";
                         // On a slow cycle, whether the amp answered a status query
                         // at all is our proxy for "powered on" — a powered-off amp
                         // ignores CI-V. Debounce so one dropped read doesn't flip
@@ -422,6 +486,7 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
                         Note("warn", $"No response for ~{staleLimit} cycles — link lost, entering recovery.");
                         amp.Disconnect();
                         _staleMiss = 0;
+                        _prevReachable = false;
                         lock (_stateGate) _telemetry.Connected = false;
                     }
                 }
@@ -446,10 +511,7 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
                         if (ok)
                         {
                             Note("info", "Recovery: reconnected.");
-                            _lastForwardedBand = "";
-                            string? band; lock (_stateGate) band = _detectedBand;
-                            if (_cfg.BandFollow && band is not null && BandPlan.IsAmpSupported(band))
-                                ForwardBand(band);
+                            ScheduleSettle(); // same post-connect steps as a manual connect
                         }
                     }
                 }
@@ -457,11 +519,10 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
 
             _pollTick++;
 
-            // Wait for the interval, but wake early on a TX rising edge or
-            // shutdown. Reset-then-wait; the MOX handler's Set() during a read is
-            // still pending here so the first TX read fires with no added latency.
-            _pollWake.Reset();
-            _pollWake.Wait(Math.Max(50, interval), token);
+            // Wait for the interval, but wake early on a radio-state change or
+            // shutdown.
+            try { _pollWake.Wait(Math.Max(50, interval), token); }
+            catch (OperationCanceledException) { break; }
         }
     }
 
@@ -472,34 +533,55 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
 
     // ── connection ───────────────────────────────────────────────────────────
 
+    // UTC ticks at which the post-connect settle is due; 0 = none pending.
+    private long _settleAtTicks;
+
+    private void ScheduleSettle()
+    {
+        Interlocked.Exchange(ref _settleAtTicks, DateTime.UtcNow.AddMilliseconds(1500).Ticks);
+        _pollWake.Set();
+    }
+
+    private bool SettleDue()
+    {
+        long at = Interlocked.Read(ref _settleAtTicks);
+        if (at == 0 || DateTime.UtcNow.Ticks < at) return false;
+        return Interlocked.CompareExchange(ref _settleAtTicks, 0, at) == at;
+    }
+
     private (bool ok, string message) TryConnect()
     {
         if (_amp is null) return (false, "not initialized");
         var (ok, msg) = _amp.Connect(_cfg.Port, _cfg.Baud, _cfg.StopBits);
         Note(ok ? "info" : "warn", $"Connect {_cfg.Port} @ {_cfg.Baud}: {(ok ? "OK" : msg)}");
-        if (ok)
-        {
-            _lastForwardedBand = "";
-            // After the serial/amp settles (~1.5s): read all antenna names,
-            // apply the connect-time STBY default, then forward the band.
-            _ = Task.Run(async () =>
-            {
-                await Task.Delay(1500);
-                if (_amp is not { IsConnected: true }) return;
-
-                ReadAllAntennaNames();
-                ApplyDefaultStbyOnConnect();
-
-                string? band; lock (_stateGate) band = _detectedBand;
-                if (_cfg.BandFollow && band is not null && BandPlan.IsAmpSupported(band))
-                {
-                    Note("bridge", $"Settle complete — forwarding band {BandPlan.Display(band)}.");
-                    ForwardBand(band);
-                }
-            });
-            _pollWake.Set();
-        }
+        if (ok) ScheduleSettle();
         return (ok, msg);
+    }
+
+    /// <summary>
+    /// Poll thread, ~1.5 s after any successful connect (manual or auto-recovery):
+    /// read antenna names, apply default-to-STBY, re-assert the 60 m interlock,
+    /// then send the current band (deferred if the radio is transmitting).
+    /// </summary>
+    private void OnLinkSettled()
+    {
+        if (_amp is not { IsConnected: true }) return;
+        _lastForwardedBand = "";
+        if (!_tx) ReadAllAntennaNames();
+        ApplyDefaultStbyOnConnect();
+
+        if (_forced60mStby)
+        {
+            Enforce60mStby();
+            return;
+        }
+
+        string? band; lock (_stateGate) band = _detectedBand;
+        if (_cfg.BandFollow && band is not null && BandPlan.IsAmpSupported(band))
+        {
+            Note("bridge", $"Settle complete — forwarding band {BandPlan.Display(band)}.");
+            RequestBand(band);
+        }
     }
 
     /// <summary>Read all six antenna names into the cache (for button tooltips).</summary>
@@ -516,9 +598,10 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
 
     /// <summary>
     /// Apply the connect-time "default to STBY" safety per the configured mode.
-    /// "connect" and "always" both force STBY when the plugin gains the link;
-    /// "off" leaves the amp as-is. (The "always" extra — reacting to a later
-    /// front-panel power-on — is handled in the poll loop.)
+    /// "connect" and "always" both force STBY when the plugin gains the link
+    /// (manual connect, Zeus start, or auto-recovery); "off" leaves the amp
+    /// as-is. (The "always" extra — reacting to a later front-panel power-on —
+    /// is handled in the poll loop.)
     /// </summary>
     private void ApplyDefaultStbyOnConnect()
     {
@@ -549,9 +632,9 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
                     connected = t.Connected,
                     port = _cfg.Port,
                     ampState = t.AmpState,
-                    detectedBand = t.DetectedBand,
-                    detectedBandDisplay = BandPlan.Display(t.DetectedBand),
-                    pendingBand = t.PendingBand,
+                    detectedBand = _detectedBand,
+                    detectedBandDisplay = BandPlan.Display(_detectedBand),
+                    pendingBand = _pendingBand,
                     lastForwardedBand = _lastForwardedBand,
                     tx = _tx,
                     bandFollow = _cfg.BandFollow,
@@ -601,24 +684,76 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
             return Results.Ok(new { manifestVersion = ManifestVersion, assemblyVersion = ver, built });
         });
 
-        // Update config. Any subset of fields may be sent.
+        // Update config. Any subset of fields may be sent. Every field is
+        // validated first; if any is invalid, nothing is applied and the reply
+        // is a 400 naming the problem(s).
         endpoints.MapPost("config", async (ConfigUpdate body) =>
         {
+            var errors = new List<string>();
+
+            string? port = body.Port?.Trim();
+            if (body.Port is not null && port!.Length == 0) errors.Add("Port must not be empty.");
+
+            if (body.Baud is int b && !ValidBauds.Contains(b))
+                errors.Add($"Baud must be one of {string.Join(", ", ValidBauds)}.");
+
+            if (body.StopBits is int s && s != 1 && s != 2) errors.Add("StopBits must be 1 or 2.");
+
+            string? addr = null;
+            if (body.Pw2AddrHex is not null)
+            {
+                addr = NormalizeAddr(body.Pw2AddrHex);
+                if (addr is null) errors.Add("CI-V address must be hex 01–DF (default AA).");
+            }
+
+            if (body.RfInput is int r && r != 0 && r != 1) errors.Add("RfInput must be 0 (INPUT1) or 1 (INPUT2).");
+
+            string? unit = null;
+            if (body.TempUnit is not null)
+            {
+                unit = body.TempUnit.Trim().ToUpperInvariant();
+                if (unit != "F" && unit != "C") errors.Add("TempUnit must be F or C.");
+            }
+
+            if (body.MaxTemp is double m && !double.IsFinite(m)) errors.Add("MaxTemp must be a number.");
+
+            string? dstby = null;
+            if (body.DefaultStby is not null)
+            {
+                dstby = body.DefaultStby.Trim().ToLowerInvariant();
+                if (dstby != "connect" && dstby != "always" && dstby != "off")
+                    errors.Add("DefaultStby must be connect, always, or off.");
+            }
+
+            if (errors.Count > 0)
+            {
+                Note("warn", "Config rejected: " + string.Join(" ", errors));
+                return Results.BadRequest(new { ok = false, message = string.Join(" ", errors) });
+            }
+
             bool reconnect = false;
-            if (body.Port is not null && body.Port != _cfg.Port) { _cfg.Port = body.Port; reconnect = true; }
+            if (port is not null && port != _cfg.Port) { _cfg.Port = port; reconnect = true; }
             if (body.Baud is int baud && baud != _cfg.Baud) { _cfg.Baud = baud; reconnect = true; }
             if (body.StopBits is int sb && sb != _cfg.StopBits) { _cfg.StopBits = sb; reconnect = true; }
-            if (body.Pw2AddrHex is not null) { _cfg.Pw2AddrHex = body.Pw2AddrHex; _amp?.SetPw2Addr(Convert.ToInt32(body.Pw2AddrHex, 16)); }
+            if (addr is not null) { _cfg.Pw2AddrHex = addr; _amp?.SetPw2Addr(Convert.ToInt32(addr, 16)); }
             if (body.RfInput is int rf) _cfg.RfInput = rf;
             if (body.BandFollow is bool bf) _cfg.BandFollow = bf;
             if (body.TxInhibit is bool ti) _cfg.TxInhibit = ti;
             if (body.AutoConnect is bool ac) _cfg.AutoConnect = ac;
-            if (body.TempUnit is not null) _cfg.TempUnit = body.TempUnit;
+            if (unit is not null && unit != _cfg.TempUnit)
+            {
+                // Switching units without a new limit: convert the existing limit
+                // so 120 °F doesn't silently become 120 °C.
+                if (body.MaxTemp is null)
+                    _cfg.MaxTemp = Math.Round(unit == "C" ? (_cfg.MaxTemp - 32) * 5 / 9 : _cfg.MaxTemp * 9 / 5 + 32);
+                _cfg.TempUnit = unit;
+            }
             if (body.MaxTemp is double mt) _cfg.MaxTemp = mt;
-            if (body.DefaultStby is not null) _cfg.DefaultStby = body.DefaultStby;
-            if (body.PollMsIdle is int pi) _cfg.PollMsIdle = Math.Max(250, pi);
-            if (body.PollMsTx is int pt) _cfg.PollMsTx = Math.Max(100, pt);
-            if (body.PeakWindowMs is int pw) _cfg.PeakWindowMs = Math.Max(1000, pw);
+            _cfg.MaxTemp = ClampMaxTemp(_cfg.MaxTemp, _cfg.TempUnit);
+            if (dstby is not null) _cfg.DefaultStby = dstby;
+            if (body.PollMsIdle is int pi) _cfg.PollMsIdle = Math.Clamp(pi, 250, 10_000);
+            if (body.PollMsTx is int pt) _cfg.PollMsTx = Math.Clamp(pt, 100, 2_000);
+            if (body.PeakWindowMs is int pw) _cfg.PeakWindowMs = Math.Clamp(pw, 1_000, 30_000);
 
             if (_ctx is not null) await SaveSettingsAsync(_ctx.Settings, _cfg, CancellationToken.None);
 
@@ -662,6 +797,7 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
         // carrier from the radio.
         endpoints.MapPost("tuner", (TunerRequest body) =>
         {
+            if (RefuseWhileTx("Tuner in-line/bypass") is { } busy) return busy;
             if (_amp is not { IsConnected: true }) return Results.BadRequest(new { ok = false, message = "not connected" });
             var (ok, msg) = _amp.SetTuner(body.Enabled);
             if (ok) lock (_stateGate) _telemetry.TunerState = body.Enabled ? 1 : 0;
@@ -692,6 +828,8 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
         // RF input select (1A 00). Proven live-readable on the bench.
         endpoints.MapPost("input", (InputRequest body) =>
         {
+            if (body.Input is not (0 or 1)) return Results.BadRequest(new { ok = false, message = "input must be 0 (INPUT1) or 1 (INPUT2)" });
+            if (RefuseWhileTx("RF input selection") is { } busy) return busy;
             if (_amp is not { IsConnected: true }) return Results.BadRequest(new { ok = false, message = "not connected" });
             var (ok, msg) = _amp.SetRfInput(body.Input);
             if (ok)
@@ -715,6 +853,8 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
         // or the amp NAKs — verified on the bench.
         endpoints.MapPost("antenna", (AntennaRequest body) =>
         {
+            if (body.Antenna is < 1 or > 6) return Results.BadRequest(new { ok = false, message = "antenna must be 1–6" });
+            if (RefuseWhileTx("Antenna selection") is { } busy) return busy;
             if (_amp is not { IsConnected: true }) return Results.BadRequest(new { ok = false, message = "not connected" });
             int live = _amp.ReadRfInput() ?? _cfg.RfInput;
             var (ok, msg) = _amp.SetAntenna(body.Antenna, live);
@@ -725,8 +865,11 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
         });
 
         // Manual band set (in addition to auto-follow), scoped to the live input.
+        // Refused while transmitting so the band relays never switch under RF.
         endpoints.MapPost("band", (BandRequest body) =>
         {
+            if (!BandPlan.IsAmpSupported(body.Band)) return Results.BadRequest(new { ok = false, message = $"'{body.Band}' is not a band the IC-PW2 supports" });
+            if (RefuseWhileTx("Band change") is { } busy) return busy;
             if (_amp is not { IsConnected: true }) return Results.BadRequest(new { ok = false, message = "not connected" });
             int live = _amp.ReadRfInput() ?? _cfg.RfInput;
             var (ok, msg) = _amp.SetBand(body.Band, live);
@@ -745,6 +888,17 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
 
         // Recent event log for the panel's debug view.
         endpoints.MapGet("log", () => Results.Ok(_events.Snapshot()));
+    }
+
+    /// <summary>
+    /// Relay-switching writes (band, input, antenna, tuner in-line) are refused
+    /// while the radio is transmitting: 409 with a message the panel shows.
+    /// </summary>
+    private IResult? RefuseWhileTx(string what)
+    {
+        if (!_tx) return null;
+        Note("warn", $"{what} refused — radio is transmitting.");
+        return Results.Conflict(new { ok = false, message = $"{what} is locked while transmitting. Try again after TX." });
     }
 
     private IResult AmpWrite(bool oper)
@@ -780,6 +934,54 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
         }
         Note(ok ? "civ" : "warn", $"{(oper ? "OPER" : "STBY")}: {(ok ? "OK" : "FAIL")} {msg}");
         return Results.Ok(new { ok, message = msg });
+    }
+
+    // ── settings validation ──────────────────────────────────────────────────
+
+    private static readonly int[] ValidBauds = { 4800, 9600, 19200 };
+
+    // Overheat threshold range, 20–70 °C (68–158 °F). Outside that, the value is
+    // either a typo or would effectively disable the interlock.
+    private const double MaxTempMinC = 20, MaxTempMaxC = 70;
+
+    private static double ClampMaxTemp(double value, string unit) => unit == "C"
+        ? Math.Clamp(value, MaxTempMinC, MaxTempMaxC)
+        : Math.Clamp(value, Math.Round(MaxTempMinC * 9 / 5 + 32), Math.Round(MaxTempMaxC * 9 / 5 + 32));
+
+    /// <summary>"aa" / "0xAA" / "A" → "AA"/"0A"; null if not a valid CI-V address (01–DF).</summary>
+    private static string? NormalizeAddr(string raw)
+    {
+        var t = raw.Trim();
+        if (t.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) t = t[2..];
+        if (t.Length is < 1 or > 2) return null;
+        if (!int.TryParse(t, System.Globalization.NumberStyles.HexNumber,
+                System.Globalization.CultureInfo.InvariantCulture, out int v)) return null;
+        if (v < 0x01 || v > 0xDF) return null; // E0+ is the controller/broadcast range
+        return v.ToString("X2", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
+    /// Repair settings loaded from storage (e.g. saved by 1.0.0 before input was
+    /// validated): anything invalid falls back to its default.
+    /// </summary>
+    private static Settings Sanitize(Settings s)
+    {
+        var d = new Settings();
+        if (string.IsNullOrWhiteSpace(s.Port)) s.Port = d.Port;
+        if (!ValidBauds.Contains(s.Baud)) s.Baud = d.Baud;
+        if (s.StopBits != 1 && s.StopBits != 2) s.StopBits = d.StopBits;
+        s.Pw2AddrHex = NormalizeAddr(s.Pw2AddrHex ?? "") ?? d.Pw2AddrHex;
+        if (s.RfInput != 0 && s.RfInput != 1) s.RfInput = d.RfInput;
+        var unit = (s.TempUnit ?? "").Trim().ToUpperInvariant();
+        s.TempUnit = unit == "C" ? "C" : "F";
+        if (!double.IsFinite(s.MaxTemp)) s.MaxTemp = s.TempUnit == "C" ? 49 : d.MaxTemp;
+        s.MaxTemp = ClampMaxTemp(s.MaxTemp, s.TempUnit);
+        var ds = (s.DefaultStby ?? "").Trim().ToLowerInvariant();
+        s.DefaultStby = ds is "connect" or "always" or "off" ? ds : d.DefaultStby;
+        s.PollMsIdle = Math.Clamp(s.PollMsIdle, 250, 10_000);
+        s.PollMsTx = Math.Clamp(s.PollMsTx, 100, 2_000);
+        s.PeakWindowMs = Math.Clamp(s.PeakWindowMs, 1_000, 30_000);
+        return s;
     }
 
     // ── settings persistence ─────────────────────────────────────────────────

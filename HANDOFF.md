@@ -6,7 +6,8 @@ Zeus's radio state.
 
 - **Plugin ID:** `com.kq4wlr.zeus.pw2bridge`
 - **Author:** KQ4WLR
-- **Current version:** 1.0.0 (submitted to the catalog, PR #8, 2026-09-27)
+- **Current version:** 1.1.0 (review fixes for catalog PR #8; 1.0.0 was the
+  original submission, 2026-09-27)
 - **SDK:** ABI 1, minVersion 1.5.0
 - **Platform:** Windows (win-x64) first; Linux/Pi possible later (see Porting)
 - **License intent:** GPL-2.0-or-later
@@ -45,7 +46,8 @@ repo, `AlarmGuyPro/KQ4WLR-Bridger`; don't mix them up.
 
 | Version | Date | SHA-256 of ZIP | Catalog PR | State |
 |---|---|---|---|---|
-| 1.0.0 | 2026-09-27 | `7b29ca283575b7d0cca903e72c5087c8c9bdecfe44ab91243ed221dc756c361f` | #8 | Open, awaiting maintainer review/custody |
+| 1.0.0 | 2026-09-27 | `7b29ca283575b7d0cca903e72c5087c8c9bdecfe44ab91243ed221dc756c361f` | #8 | Changes requested by KB2UKA (2026-09-28); superseded by 1.1.0 |
+| 1.1.0 | (pending) | (fill in after build) | #8 (updated) | Review fixes; not yet built/released |
 
 Update this table on every release and when a PR merges.
 
@@ -132,8 +134,13 @@ blue Windows PowerShell), Git, and Node.js LTS. Hardware: Windows 11 x64, Zeus
 
 ### Open items
 
-- PR #8: waiting for maintainer review → custody → merge. Reply to any review
-  comments on the same branch (push fixes to it; don't open a new PR).
+- PR #8: KB2UKA requested changes on 1.0.0 (2026-09-28). All six items plus
+  the minor one are fixed in 1.1.0 (see §5 and the 1.1.0 notes below). Next:
+  build/test 1.1.0, release it, and update the **same** PR branch to 1.1.0
+  (replace the 1.0.0 entry, since 1.0.0 was never listed).
+- Cross-platform: KB2UKA offered to do the macOS/Linux packaging once the
+  review items are fixed. The operator accepted; coordinate with him before
+  touching the csproj RID or `platforms`.
 - Light theme: `--ok` green text on pills and buttons is low-contrast (it comes
   from Zeus's own tokens). Adjust only if a reviewer asks.
 - Protection-fault and overheat banners have never been captured on hardware.
@@ -206,6 +213,16 @@ Directory.Build.props Copied from the SDK; sets TreatWarningsAsErrors=true, so
 **Threading:** the poll loop reads serial *outside* a lock, then commits values
 under `_stateGate` briefly. Serial round-trips can take up to ~500 ms; never
 hold the state lock across a serial call or `/status` stalls.
+
+**Never do serial I/O in a Zeus radio callback** (1.1.0, review item 5). Zeus
+raises `FrequencyChanged`/`MoxChanged` synchronously on the thread that delivers
+all radio state, so a blocking CI-V call there stalls every radio update in
+Zeus. The handlers only record the value and `_pollWake.Set()`; the poll loop
+calls `ProcessRadioEvents()` at the top of each cycle and does the band / 60 m
+/ deferred-band work there. The post-connect settle (antenna names,
+default-to-STBY, band) also runs on the poll thread via `ScheduleSettle()`,
+for both manual connect and auto-recovery. `_pollWake.Reset()` happens at the
+*start* of a cycle so a wake that arrives mid-cycle isn't lost.
 
 ---
 
@@ -293,14 +310,25 @@ don't undo them.
 ## 5. Safety logic (deliberate — don't weaken without thought)
 
 - **Never key TX / never touch PureSignal.** Hard rule from CONTRIBUTING.
+- **Automatic actions only ever move the amp toward STBY, never to OPER.**
+  (1.0.0 broke this by restoring OPER on 60 m exit; fixed in 1.1.0.)
 - **60m low-power sub-band (5351.5-5366.5 kHz, `60m-new`):** actively forces
-  STBY on entry, blocks OPER while there, re-asserts STBY if the amp drifts to
-  OPER (e.g. front-panel press), and restores the prior state on exit. Normal
-  60m channels are left alone.
-- **Overheat auto-STBY:** configurable threshold (default **120 F**). At/above
-  it, force STBY and **latch** — OPER stays blocked until the operator manually
-  presses STBY (does NOT auto-restore on cool-down, by request). Prominent
-  alarm banner.
+  STBY on entry, blocks OPER while there, and re-asserts STBY every poll cycle
+  if the amp drifts to OPER (e.g. front-panel press). Runs **regardless of the
+  band-follow setting**. On exit the amp **stays in STBY**; the operator
+  presses OPER. Normal 60m channels are left alone.
+- **Overheat auto-STBY:** configurable threshold (default **120 F**, clamped
+  to 20-70 C / 68-158 F). At/above it, force STBY and **latch** — OPER stays
+  blocked, and STBY is re-asserted if the amp is switched to OPER, until the
+  operator manually presses STBY (does NOT auto-restore on cool-down, by
+  request). Temperature and amp state are read about once a second **during
+  TX** too (`txSafety` cadence), since long transmissions are when it heats up.
+- **No relay switching under RF:** the band, input, antenna, and tuner
+  in-line endpoints return 409 while `_tx` is true; the UI greys those
+  controls. Band-follow defers via `_pendingBand` (when TX-inhibit is on).
+- **Settings are validated** (POST config returns 400 and applies nothing if
+  any field is bad; stored settings are repaired by `Sanitize()` at load).
+  Changing temp unit without a new limit converts the limit.
 - **Protection alarm:** when `1A 0C` reports a fault, show a prominent banner.
   The amp stops TX itself; the plugin doesn't duplicate that.
 - **High SWR:** left to the amp's own foldback (display only — arc goes
@@ -309,7 +337,12 @@ don't undo them.
   drop the link -> failsafe UI (grey, "—"); if auto-connect is on, retry every
   ~3 s and resume when reads succeed.
 - **Send band on connect:** after a ~1.5 s settle delay (serial/amp needs to
-  settle), forward the current band — on fresh connect and on Zeus open.
+  settle), apply default-to-STBY and forward the current band — on fresh
+  connect, on Zeus open, **and after auto-recovery** (1.1.0).
+- **"Always" default-STBY bug fixed in 1.1.0:** the power-on edge used to be
+  evaluated every cycle, so skipped status reads looked like "amp came back"
+  and OPER was knocked back to STBY every few seconds in "always" mode. Now
+  evaluated on slow cycles only.
 
 **Open item for international publish:** US operators won't hit a band change
 mid-transmission the way some other regions might. If publishing widely, review

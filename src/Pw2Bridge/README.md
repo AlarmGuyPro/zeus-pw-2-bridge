@@ -5,7 +5,7 @@ over the amplifier's CI-V serial link. Adds an IC-PW2 panel with live metering,
 amplifier control, automatic band-follow, and a set of safety interlocks.
 
 - **Author:** KQ4WLR
-- **Version:** 1.0.0
+- **Version:** 1.1.0
 - **License:** GPL-2.0-or-later
 - **Platform:** Windows (win-x64)
 - **Requires:** Zeus with plugin radio-state support (WDSP 2.10 release or later),
@@ -115,19 +115,28 @@ link allows — no more, no less.
 The plugin never keys your transmitter and never touches PureSignal. Its safety
 features act only on the amplifier:
 
+- **Automatic actions only move toward STBY.** Nothing the plugin does on its
+  own ever switches the amp to OPER; only your OPER press does.
 - **60 m low-power sub-band (5351.5–5366.5 kHz):** to respect the FCC power
-  limit there, the plugin forces the amp to STBY on entering that sub-band,
-  blocks OPER while you're in it, and restores your prior state on leaving.
+  limit there, the plugin forces the amp to STBY on entering that sub-band and
+  blocks OPER while you're in it. This works whether or not band-follow is on.
+  When you tune out of the sub-band the amp stays in STBY; press OPER when
+  you're ready.
 - **Overheat auto-STBY:** if the amp's temperature reaches a configurable limit
   (default 120 °F), the plugin forces STBY and *latches* it — OPER stays blocked
-  until you manually press STBY, so a hot amp can't silently resume.
+  until you manually press STBY, so a hot amp can't silently resume. The
+  temperature is checked about once a second during transmit as well.
 - **Protection alarm:** if the amp reports a protection fault, a prominent alarm
   is shown. (The amp stops transmitting on its own; the plugin surfaces it.)
+- **No relay switching under RF:** band, RF input, antenna, and tuner
+  in-line/bypass changes from the panel are locked while the radio is
+  transmitting. With "Inhibit band change during TX" on (the default),
+  band-follow also waits until TX drops before changing band.
 - **Stale-data failsafe:** if the amp stops responding, the panel drops to a
   clear "disconnected" state rather than showing frozen values, and attempts to
   reconnect automatically.
 - **Default to STBY on connect:** by default the amp is placed in STBY when the
-  plugin first gains control (configurable).
+  plugin gains control, including after an automatic reconnect (configurable).
 
 The amplifier's own protection systems remain your primary safety layer. These
 interlocks are an added convenience, not a replacement for the amp's protection.

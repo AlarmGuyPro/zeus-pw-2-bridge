@@ -373,6 +373,10 @@ function makePanel(callBackend) {
     const alarmRow = alarms.length ? h("div", { className: pcls("row") }, alarms) : null;
 
     const on60mLow = status && status.detectedBand === "60m-new";
+    // Relay-switching controls are locked while the radio transmits (the
+    // backend refuses them too); the tooltip says why.
+    const txLock = !!tx;
+    const txTip = txLock ? "Locked while transmitting" : undefined;
     const bandRow = h("div", { className: pcls("row") },
       h("span", { className: pcls("glab") }, "BAND"),
       h("span", { className: pcls("pill acc") }, (status && status.detectedBandDisplay) || "—"),
@@ -408,15 +412,15 @@ function makePanel(callBackend) {
       h("div", { className: pcls("btns") },
         h("button", { className: pcls("b " + (ampState === "OPER" ? "sel" : "")), disabled: busy || !connected || on60mLow, onClick: () => act("POST", "/oper") }, "OPER"),
         h("button", { className: pcls("b " + (ampState === "STBY" ? "sel" : "")), disabled: busy || !connected, onClick: () => act("POST", "/stby") }, "STBY"),
-        h("button", { className: pcls("b " + (tunerOn ? "sel" : "")), disabled: busy || !connected, onClick: () => act("POST", "/tuner", { enabled: !tunerOn }) }, tunerOn ? "TUNER ON" : "TUNER OFF"),
+        h("button", { className: pcls("b " + (tunerOn ? "sel" : "")), title: txTip, disabled: busy || !connected || txLock, onClick: () => act("POST", "/tuner", { enabled: !tunerOn }) }, tunerOn ? "TUNER ON" : "TUNER OFF"),
         h("button", { className: pcls("b " + (tuning ? "acc" : "")), disabled: busy || !connected, onClick: () => setTuneDialog(true) }, tuning ? "TUNING…" : "TUNE"),
         protBad ? h("button", { className: pcls("b warn"), disabled: busy, onClick: () => act("POST", "/clear-protection") }, "Clear Protection") : null));
 
     const inputGroup = h("div", { className: pcls("group") },
       h("div", { className: pcls("glab") }, "RF INPUT"),
       h("div", { className: pcls("btns") },
-        h("button", { className: pcls("b " + (activeInput === 0 ? "sel" : "")), disabled: busy || !connected, onClick: () => act("POST", "/input", { input: 0 }) }, "INPUT 1"),
-        h("button", { className: pcls("b " + (activeInput === 1 ? "sel" : "")), disabled: busy || !connected, onClick: () => act("POST", "/input", { input: 1 }) }, "INPUT 2")));
+        h("button", { className: pcls("b " + (activeInput === 0 ? "sel" : "")), title: txTip, disabled: busy || !connected || txLock, onClick: () => act("POST", "/input", { input: 0 }) }, "INPUT 1"),
+        h("button", { className: pcls("b " + (activeInput === 1 ? "sel" : "")), title: txTip, disabled: busy || !connected || txLock, onClick: () => act("POST", "/input", { input: 1 }) }, "INPUT 2")));
 
     const antNames = (status && status.antennaNames) || [];
     const antButtons = [];
@@ -425,8 +429,8 @@ function makePanel(callBackend) {
       const tip = nm && nm.length ? "ANT " + a + " — " + nm : "ANT " + a;
       antButtons.push(h("button", {
         key: a, className: pcls("b ant " + (activeAnt === a ? "sel" : "")),
-        title: tip,
-        disabled: busy || !connected, onClick: () => act("POST", "/antenna", { antenna: a }),
+        title: txLock ? txTip : tip,
+        disabled: busy || !connected || txLock, onClick: () => act("POST", "/antenna", { antenna: a }),
       }, String(a)));
     }
     const antGroup = h("div", { className: pcls("group") },
@@ -451,15 +455,17 @@ function makePanel(callBackend) {
         h("select", { className: pcls("in"), value: String(cfg.baud), onChange: e => saveCfg({ baud: parseInt(e.target.value, 10) }) },
           ["4800", "9600", "19200"].map(b => h("option", { key: b, value: b }, b)))),
       h("div", { className: pcls("fld") }, h("label", null, "CI-V Addr"),
-        h("input", { className: pcls("in"), value: cfg.pw2AddrHex, size: 4, maxLength: 2,
-          onChange: e => saveCfg({ pw2AddrHex: e.target.value.toUpperCase() }) }),
+        h("input", { className: pcls("in"), key: "addr-" + cfg.pw2AddrHex, defaultValue: cfg.pw2AddrHex, size: 4, maxLength: 2,
+          onBlur: e => { const v = e.target.value.trim().toUpperCase(); if (v !== cfg.pw2AddrHex) saveCfg({ pw2AddrHex: v }); else e.target.value = cfg.pw2AddrHex; } }),
         h("span", { className: pcls("muted") }, "hex, default AA")),
       h("div", { className: pcls("fld") }, h("label", null, "Temp Unit"),
         h("select", { className: pcls("in"), value: cfg.tempUnit, onChange: e => saveCfg({ tempUnit: e.target.value }) },
           [h("option", { key: "F", value: "F" }, "°F"), h("option", { key: "C", value: "C" }, "°C")])),
       h("div", { className: pcls("fld") }, h("label", null, "Overheat STBY"),
-        h("input", { className: pcls("in"), type: "number", step: 1, value: cfg.maxTemp, size: 5,
-          onChange: e => saveCfg({ maxTemp: parseFloat(e.target.value) || 120 }) }),
+        h("input", { className: pcls("in"), type: "number", step: 1, size: 5,
+          key: "maxt-" + cfg.tempUnit + "-" + cfg.maxTemp, defaultValue: cfg.maxTemp,
+          min: cfg.tempUnit === "C" ? 20 : 68, max: cfg.tempUnit === "C" ? 70 : 158,
+          onBlur: e => { const v = parseFloat(e.target.value); if (Number.isFinite(v) && v !== cfg.maxTemp) saveCfg({ maxTemp: v }); else e.target.value = cfg.maxTemp; } }),
         h("span", { className: pcls("muted") }, "°" + cfg.tempUnit + " — auto-STBY at/above")),
       h("div", { className: pcls("fld") }, h("label", null, "Default STBY"),
         h("select", { className: pcls("in"), value: cfg.defaultStby || "connect",
@@ -489,7 +495,7 @@ function makePanel(callBackend) {
         h("input", { type: "checkbox", checked: !!cfg.autoConnect, onChange: e => saveCfg({ autoConnect: e.target.checked }) }),
         "Auto-connect on start"),
       h("div", { className: pcls("fld") }, h("label", null, "Manual band"),
-        h("select", { className: pcls("in"), value: "", onChange: e => { if (e.target.value) act("POST", "/band", { band: e.target.value }); } },
+        h("select", { className: pcls("in"), value: "", title: txTip, disabled: busy || txLock, onChange: e => { if (e.target.value) act("POST", "/band", { band: e.target.value }); } },
           [h("option", { key: "", value: "" }, "set…")].concat(AMP_BANDS.map(b => h("option", { key: b, value: b }, b))))),
       h("div", { className: pcls("muted"), style: { paddingTop: "4px" } },
         ver ? ("IC-PW2 Bridge v" + (ver.manifestVersion || "?") + " · built " + (ver.built || "?")) : "version …")) : null;
