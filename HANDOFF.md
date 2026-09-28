@@ -47,7 +47,7 @@ repo, `AlarmGuyPro/KQ4WLR-Bridger`; don't mix them up.
 | Version | Date | SHA-256 of ZIP | Catalog PR | State |
 |---|---|---|---|---|
 | 1.0.0 | 2026-09-27 | `7b29ca283575b7d0cca903e72c5087c8c9bdecfe44ab91243ed221dc756c361f` | #8 | Changes requested by KB2UKA (2026-09-28); superseded by 1.1.0 |
-| 1.1.0 | (pending) | (fill in after build) | #8 (updated) | Review fixes; not yet built/released |
+| 1.1.0 | 2026-09-28 | `4587a5c98be1a2be2ea96eb3efa8a58f1e7df2a56c978bc0840d0e1584a82449` | #8 (updated; registry entry replaced 1.0.0) | Hardware-tested, released, awaiting re-review/custody |
 
 Update this table on every release and when a PR merges.
 
@@ -136,8 +136,9 @@ blue Windows PowerShell), Git, and Node.js LTS. Hardware: Windows 11 x64, Zeus
 
 - PR #8: KB2UKA requested changes on 1.0.0 (2026-09-28). All six items plus
   the minor one are fixed in 1.1.0 (see §5 and the 1.1.0 notes below). Next:
-  build/test 1.1.0, release it, and update the **same** PR branch to 1.1.0
-  (replace the 1.0.0 entry, since 1.0.0 was never listed).
+  built, hardware-tested and released 1.1.0 (2026-09-28); the PR branch
+  `community/com.kq4wlr.zeus.pw2bridge-1.0.0` now carries 1.1.0 in place of
+  1.0.0 (1.0.0 was never listed). Waiting on KB2UKA's re-review and custody.
 - Cross-platform: KB2UKA offered to do the macOS/Linux packaging once the
   review items are fixed. The operator accepted; coordinate with him before
   touching the csproj RID or `platforms`.
