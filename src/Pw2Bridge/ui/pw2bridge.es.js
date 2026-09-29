@@ -355,6 +355,9 @@ function makePanel(callBackend) {
     const antName = status && status.activeAntennaName ? status.activeAntennaName : "";
     const antLabel = antName && antName.length ? antName : (connected ? "ANT " + activeAnt : "—");
     const overheat = status && status.overheatLatched;
+    // The IC-PW2 won't leave OPER while RF is present, so an STBY that comes
+    // due during TX is sent at unkey; show that it is waiting.
+    const stbyAtUnkey = !!(status && status.stbyAtUnkey) && status.ampState === "OPER";
     const header = h("div", { className: pcls("row between") },
       h("div", null,
         h("div", { className: pcls("title") }, "IC-PW2"),
@@ -368,7 +371,10 @@ function makePanel(callBackend) {
 
     // Prominent alarm banners for overheat / protection faults.
     const alarms = [];
-    if (!dim && overheat) alarms.push(h("span", { key: "oh", className: pcls("pill tx") }, "⚠ OVERHEAT — STBY LATCHED (press STBY to clear)"));
+    if (!dim && overheat) alarms.push(h("span", { key: "oh", className: pcls("pill tx") }, stbyAtUnkey
+      ? "⚠ OVERHEAT — STBY WHEN TX DROPS (unkey now)"
+      : "⚠ OVERHEAT — STBY LATCHED (press STBY to clear)"));
+    else if (!dim && stbyAtUnkey) alarms.push(h("span", { key: "su", className: pcls("pill warn") }, "STBY WHEN TX DROPS"));
     if (!dim && protBad) alarms.push(h("span", { key: "pr", className: pcls("pill tx") }, "⚠ PROTECT: " + m.protection));
     const alarmRow = alarms.length ? h("div", { className: pcls("row") }, alarms) : null;
 
@@ -411,7 +417,7 @@ function makePanel(callBackend) {
       h("div", { className: pcls("glab") }, "AMPLIFIER"),
       h("div", { className: pcls("btns") },
         h("button", { className: pcls("b " + (ampState === "OPER" ? "sel" : "")), title: txTip, disabled: busy || !connected || on60mLow || txLock, onClick: () => act("POST", "/oper") }, "OPER"),
-        h("button", { className: pcls("b " + (ampState === "STBY" ? "sel" : "")), disabled: busy || !connected, onClick: () => act("POST", "/stby") }, "STBY"),
+        h("button", { className: pcls("b " + (ampState === "STBY" ? "sel" : "")), title: txLock ? "The amp won't leave OPER while transmitting; STBY is sent when TX drops" : undefined, disabled: busy || !connected, onClick: () => act("POST", "/stby") }, "STBY"),
         h("button", { className: pcls("b " + (tunerOn ? "sel" : "")), title: txTip, disabled: busy || !connected || txLock, onClick: () => act("POST", "/tuner", { enabled: !tunerOn }) }, tunerOn ? "TUNER ON" : "TUNER OFF"),
         h("button", { className: pcls("b " + (tuning ? "acc" : "")), disabled: busy || !connected, onClick: () => setTuneDialog(true) }, tuning ? "TUNING…" : "TUNE"),
         protBad ? h("button", { className: pcls("b warn"), disabled: busy, onClick: () => act("POST", "/clear-protection") }, "Clear Protection") : null));

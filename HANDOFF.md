@@ -48,7 +48,7 @@ repo, `AlarmGuyPro/KQ4WLR-Bridger`; don't mix them up.
 |---|---|---|---|---|
 | 1.0.0 | 2026-09-27 | `7b29ca283575b7d0cca903e72c5087c8c9bdecfe44ab91243ed221dc756c361f` | #8 | Changes requested by KB2UKA (2026-09-28); superseded by 1.1.0 |
 | 1.1.0 | 2026-09-28 | `4587a5c98be1a2be2ea96eb3efa8a58f1e7df2a56c978bc0840d0e1584a82449` | #8 (updated; registry entry replaced 1.0.0) | Released; KB2UKA re-review (2026-09-29) asked for OPER/power TX lock → 1.1.1 |
-| 1.1.1 | — | — | #8 (to update) | Code pushed (OPER + main power locked during TX, deferred-band recheck, time-based TX safety cadence). Needs build, hardware test, release |
+| 1.1.1 | — | — | #8 (to update) | Code pushed (OPER + main power locked during TX, STBY-during-TX deferred to unkey, deferred-band recheck, time-based TX safety cadence). Needs build, hardware test, release |
 
 Update this table on every release and when a PR merges.
 
@@ -327,14 +327,19 @@ don't undo them.
   TX** too (`txSafety` cadence), since long transmissions are when it heats up.
 - **No relay switching under RF:** the band, input, antenna, tuner
   in-line, OPER, and main power (on and off) endpoints return 409 while `_tx`
-  is true; the UI greys those controls (and the power confirm button). **STBY
-  is never refused** (safe direction). Band-follow defers via `_pendingBand`
+  is true; the UI greys those controls (and the power confirm button). STBY
+  is never refused, but see the next item. Band-follow defers via `_pendingBand`
   (when TX-inhibit is on); `ApplyPendingBand` drops the deferred band if
   band-follow was turned off during TX (1.1.1).
-- **STBY under RF (overheat trip):** intentional, confirmed with KB2UKA. The
-  manual shows the amp itself turns the amplifier circuit off mid-TX on its own
-  TEMP protection (IM p. 4-6) and during manual tune (p. 4-1). CI-V STBY under
-  RF is not separately documented; see the comment at the overheat trip.
+- **The amp will not go to STBY under RF** (hardware-observed by KQ4WLR,
+  2026-09-29): with PTT held, a STBY request is not obeyed. The amp stays in
+  OPER, no protection, no fault. So (1.1.1) nothing sends STBY during TX:
+  a manual STBY press during TX sets `_manualStbyPending` and is sent on the
+  first cycle after unkey (and clears the overheat latch only then); an
+  overheat trip during TX latches immediately and the latch hold sends STBY at
+  unkey; the 60M-NEW hold does the same. `/status` exposes `stbyAtUnkey` and
+  the panel shows "STBY WHEN TX DROPS". The amp's own TEMP protection still
+  turns the amplifier circuit off mid-TX at its HOT zone (IM p. 4-6).
 - **TX safety cadence is time-based** (1.1.1): temperature + amp state are read
   when >= 1 s has elapsed (`Environment.TickCount64`), not every N cycles, so a
   slow link can't stretch it.

@@ -125,12 +125,17 @@ features act only on the amplifier:
 - **Overheat auto-STBY:** if the amp's temperature reaches a configurable limit
   (default 120 °F), the plugin forces STBY and *latches* it — OPER stays blocked
   until you manually press STBY, so a hot amp can't silently resume. The
-  temperature is checked about once a second during transmit as well.
+  temperature is checked about once a second during transmit as well. If the
+  limit is reached mid-transmission, the latch is set at once and STBY is sent
+  as soon as you unkey (the amp won't switch to STBY under RF). The amp's own
+  temperature protection still acts during transmit regardless.
 - **Protection alarm:** if the amp reports a protection fault, a prominent alarm
   is shown. (The amp stops transmitting on its own; the plugin surfaces it.)
 - **No relay switching under RF:** band, RF input, antenna, tuner
   in-line/bypass, OPER, and main power on/off are locked while the radio is
-  transmitting. STBY is always available, including mid-transmission. With
+  transmitting. The IC-PW2 itself won't leave OPER while RF is present, so a
+  STBY press during transmit is held and sent the moment you unkey (the panel
+  shows "STBY WHEN TX DROPS"). With
   "Inhibit band change during TX" on (the default), band-follow also waits
   until TX drops before changing band; if you turn band-follow off during the
   transmission, that deferred change is dropped.

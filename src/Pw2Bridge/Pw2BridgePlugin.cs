@@ -124,6 +124,7 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
 
     private volatile bool _forced60mStby;      // holding the amp in STBY for 60M-NEW
     private volatile bool _overheatLatched;    // holding STBY due to overheat (manual clear)
+    private volatile bool _manualStbyPending;  // operator pressed STBY during TX; send at unkey
     private readonly string[] _antNames = new string[6]; // cached ANT 1..6 names
 
     // Zeus radio-state callbacks: record and signal only. No serial I/O here.
@@ -199,6 +200,12 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
     private void Enforce60mStby()
     {
         if (_amp is not { IsConnected: true }) return; // re-asserted by the poll loop once connected
+        if (_tx)
+        {
+            // The amp won't leave OPER under RF; the poll loop sends STBY at unkey.
+            Note("bridge", "60M-NEW entered during TX — STBY will be sent when TX drops.");
+            return;
+        }
         var st = _amp.ReadAmpCircuit();
         if (st != 0) // OPER, or unknown — STBY is always the safe write
         {
@@ -424,8 +431,33 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
                         _prevReachable = reachableNow;
                     }
 
+                    // STBY and RF: the IC-PW2 will not leave OPER while RF is
+                    // present. Hardware-observed (KQ4WLR, 2026-09-29): with PTT
+                    // held, a STBY request is simply not obeyed. The amp stays in
+                    // OPER, does not go into protection, and raises no fault. So
+                    // no interlock sends STBY while transmitting; every STBY that
+                    // is due during TX goes out on the first cycle after TX
+                    // drops (MoxChanged wakes the poll loop, so that is at once).
+
+                    // Operator pressed STBY during TX: send it now that TX dropped.
+                    if (!txNow && _manualStbyPending)
+                    {
+                        _manualStbyPending = false;
+                        var (ok, _) = amp.SetAmpCircuit(false);
+                        if (ok)
+                        {
+                            ampSt = 0;
+                            if (_overheatLatched)
+                            {
+                                _overheatLatched = false; // same as a manual STBY outside TX
+                                Note("info", "Overheat latch cleared by operator.");
+                            }
+                        }
+                        Note(ok ? "civ" : "warn", $"TX dropped — sending STBY requested during TX: {(ok ? "OK" : "FAIL")}");
+                    }
+
                     // Enforce 60M-NEW STBY if the amp drifted to OPER (front panel).
-                    if (_forced60mStby && ampSt == 1)
+                    if (_forced60mStby && ampSt == 1 && !txNow)
                     {
                         var (ok, _) = amp.SetAmpCircuit(false);
                         if (ok) ampSt = 0;
@@ -442,23 +474,29 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
                         if (tempForCompare >= _cfg.MaxTemp && !_overheatLatched)
                         {
                             _overheatLatched = true;
-                            // Send STBY unconditionally: on a TX cycle the amp state
-                            // may not have been read, and STBY is always safe.
-                            // STBY under RF is intentional. The IC-PW2 makes the
-                            // same OPER→off transition by itself mid-transmission:
-                            // its own TEMP protection turns the amplifier circuit
-                            // off while transmitting (Instruction Manual p. 4-6),
-                            // and a manual tune turns it off temporarily (p. 4-1).
-                            // The CI-V guide does not separately document STBY-under-
-                            // RF sequencing, so this relies on the amp handling that
-                            // transition the same way it does for its own protection.
-                            var (ok, _) = amp.SetAmpCircuit(false);
-                            if (ok) ampSt = 0;
-                            Note("warn", $"OVERHEAT {tempForCompare:F1}°{_cfg.TempUnit} ≥ {_cfg.MaxTemp}°{_cfg.TempUnit} — forced STBY ({(ok ? "OK" : "FAIL")}), latched.");
+                            if (txNow)
+                            {
+                                // The amp won't take STBY under RF (see above), so
+                                // latch now and let the hold below send STBY at unkey.
+                                // The amp's own TEMP protection still turns the
+                                // amplifier circuit off mid-TX if it reaches its HOT
+                                // zone (Instruction Manual p. 4-6); this latch is the
+                                // operator's lower, configurable limit on top of that.
+                                Note("warn", $"OVERHEAT {tempForCompare:F1}°{_cfg.TempUnit} ≥ {_cfg.MaxTemp}°{_cfg.TempUnit} during TX — latched. Amp stays OPER while transmitting; STBY will be sent when TX drops.");
+                            }
+                            else
+                            {
+                                // Send STBY unconditionally (amp state may not have
+                                // been read this cycle); STBY is always the safe write.
+                                var (ok, _) = amp.SetAmpCircuit(false);
+                                if (ok) ampSt = 0;
+                                Note("warn", $"OVERHEAT {tempForCompare:F1}°{_cfg.TempUnit} ≥ {_cfg.MaxTemp}°{_cfg.TempUnit} — forced STBY ({(ok ? "OK" : "FAIL")}), latched.");
+                            }
                         }
                     }
                     // Hold STBY while latched (e.g. a front-panel OPER press).
-                    if (_overheatLatched && ampSt == 1)
+                    // Not while transmitting; the first cycle after unkey sends it.
+                    if (_overheatLatched && ampSt == 1 && !txNow)
                     {
                         var (ok, _) = amp.SetAmpCircuit(false);
                         if (ok) ampSt = 0;
@@ -665,6 +703,9 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
                     antennaNames = _antNames,
                     tunerState = t.TunerState,
                     overheatLatched = _overheatLatched,
+                    // An STBY is waiting for TX to drop (manual press, overheat
+                    // latch or 60M-NEW hold that came due while transmitting).
+                    stbyAtUnkey = _tx && (_manualStbyPending || _overheatLatched || _forced60mStby),
                     poweredOn = t.PoweredOn,
                     meters = new
                     {
@@ -802,6 +843,7 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
         endpoints.MapPost("disconnect", () =>
         {
             _amp?.Disconnect();
+            _manualStbyPending = false; // don't fire a stale STBY on a later reconnect
             Note("info", "Disconnected by user.");
             return Results.Ok(new { ok = true });
         });
@@ -948,6 +990,16 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
             Note("warn", "OPER blocked — overheat latch active. Let the amp cool, then press STBY to clear.");
             lock (_stateGate) _telemetry.AmpState = "STBY";
             return Results.Ok(new { ok = false, message = "Blocked: overheat latch active (press STBY to clear)." });
+        }
+        // STBY during TX: the IC-PW2 won't leave OPER while RF is present, so
+        // queue it for the moment TX drops instead of sending a write the amp
+        // ignores. The overheat latch is cleared then too, not now, so the latch
+        // can't be released while the amp is still in OPER.
+        if (!oper && _tx)
+        {
+            _manualStbyPending = true;
+            Note("info", "STBY pressed during TX — amp stays OPER under RF; STBY will be sent when TX drops.");
+            return Results.Ok(new { ok = true, queued = true, message = "STBY will be sent when TX drops (the amp won't leave OPER while transmitting)." });
         }
         if (!oper && _overheatLatched)
         {
