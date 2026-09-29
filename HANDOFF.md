@@ -35,6 +35,7 @@ where the session allows.
 | Catalog fork (for listing PRs) | https://github.com/AlarmGuyPro/zeus-community-features |
 | Official catalog | https://github.com/Zeus-SDR/zeus-community-features (read its `CONTRIBUTING.md`) |
 | 1.0.0 listing PR | https://github.com/Zeus-SDR/zeus-community-features/pull/8 |
+| 1.1.1 release PR | https://github.com/Zeus-SDR/zeus-community-features/pull/12 |
 | Operator's local clone | `C:\zeus-pw-2-bridge` (build outputs in `artifacts\`) |
 | Operator's catalog clone | `C:\zcf` (used to run the catalog's required checks) |
 | Screenshots used as PR evidence | `docs/screenshots/` |
@@ -48,7 +49,7 @@ repo, `AlarmGuyPro/KQ4WLR-Bridger`; don't mix them up.
 |---|---|---|---|---|
 | 1.0.0 | 2026-09-27 | `7b29ca283575b7d0cca903e72c5087c8c9bdecfe44ab91243ed221dc756c361f` | #8 | Changes requested by KB2UKA (2026-09-28); superseded by 1.1.0 |
 | 1.1.0 | 2026-09-28 | `4587a5c98be1a2be2ea96eb3efa8a58f1e7df2a56c978bc0840d0e1584a82449` | #8 | **Merged — listed in the official catalog.** KB2UKA's follow-up review (2026-09-29) → 1.1.1 |
-| 1.1.1 | 2026-09-29 | `b1e9863b35013bf20469a1ec14d3fa214c665a1aeefc28fe99aa229f24ebf341` | new PR from fork branch `community/com.kq4wlr.zeus.pw2bridge-1.1.1` | Hardware-tested (TX lockout, STBY at unkey, overheat during TX), released, hash verified. Registry branch pushed; PR to open |
+| 1.1.1 | 2026-09-29 | `b1e9863b35013bf20469a1ec14d3fa214c665a1aeefc28fe99aa229f24ebf341` | [#12](https://github.com/Zeus-SDR/zeus-community-features/pull/12) (branch `community/com.kq4wlr.zeus.pw2bridge-1.1.1`) | Hardware-tested (TX lockout, STBY at unkey, overheat during TX), released, hash verified, all catalog checks pass. PR opened 2026-09-29; awaiting review/custody |
 
 Update this table on every release and when a PR merges.
 
