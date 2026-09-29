@@ -433,8 +433,10 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
 
                     // STBY and RF: the IC-PW2 will not leave OPER while RF is
                     // present. Hardware-observed (KQ4WLR, 2026-09-29): with PTT
-                    // held, a STBY request is simply not obeyed. The amp stays in
-                    // OPER, does not go into protection, and raises no fault. So
+                    // held, a STBY request is simply not obeyed, whether it comes
+                    // over CI-V or from the amp's own front-panel STBY button. The
+                    // amp stays in OPER, does not go into protection, and raises
+                    // no fault. It is the amp's own lockout, not a CI-V quirk. So
                     // no interlock sends STBY while transmitting; every STBY that
                     // is due during TX goes out on the first cycle after TX
                     // drops (MoxChanged wakes the poll loop, so that is at once).

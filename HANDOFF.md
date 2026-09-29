@@ -332,8 +332,9 @@ don't undo them.
   (when TX-inhibit is on); `ApplyPendingBand` drops the deferred band if
   band-follow was turned off during TX (1.1.1).
 - **The amp will not go to STBY under RF** (hardware-observed by KQ4WLR,
-  2026-09-29): with PTT held, a STBY request is not obeyed. The amp stays in
-  OPER, no protection, no fault. So (1.1.1) nothing sends STBY during TX:
+  2026-09-29): with PTT held, a STBY request is not obeyed, from CI-V or from
+  the amp's own front-panel STBY button. The amp stays in OPER, no
+  protection, no fault; it's the amp's own lockout. So (1.1.1) nothing sends STBY during TX:
   a manual STBY press during TX sets `_manualStbyPending` and is sent on the
   first cycle after unkey (and clears the overheat latch only then); an
   overheat trip during TX latches immediately and the latch hold sends STBY at
