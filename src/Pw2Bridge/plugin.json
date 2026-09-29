@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "com.kq4wlr.zeus.pw2bridge",
   "name": "IC-PW2 Bridge",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "author": "KQ4WLR",
   "description": "Control and monitoring for the Icom IC-PW2 linear amplifier over CI-V serial, with automatic band-follow driven by Zeus radio state. Displays output power, SWR, ALC, drain voltage/current, temperature, humidity, and protection status.",
   "homepage": "https://github.com/AlarmGuyPro/zeus-pw-2-bridge",

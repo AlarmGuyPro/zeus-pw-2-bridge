@@ -401,8 +401,8 @@ function makePanel(callBackend) {
     const powerGroup = h("div", { className: pcls("group") },
       h("div", { className: pcls("glab") }, "MAIN POWER"),
       h("div", { className: pcls("btns") },
-        h("button", { className: pcls("b ok"), disabled: busy || !connected, onClick: () => setConfirmPower(true) }, "Power ON"),
-        h("button", { className: pcls("b danger"), disabled: busy || !connected, onClick: () => setConfirmPower(false) }, "Power OFF")));
+        h("button", { className: pcls("b ok"), title: txTip, disabled: busy || !connected || txLock, onClick: () => setConfirmPower(true) }, "Power ON"),
+        h("button", { className: pcls("b danger"), title: txTip, disabled: busy || !connected || txLock, onClick: () => setConfirmPower(false) }, "Power OFF")));
 
     const tunerState = status && typeof status.tunerState === "number" ? status.tunerState : 0;
     const tunerOn = tunerState >= 1;
@@ -410,7 +410,7 @@ function makePanel(callBackend) {
     const ampGroup = h("div", { className: pcls("group") },
       h("div", { className: pcls("glab") }, "AMPLIFIER"),
       h("div", { className: pcls("btns") },
-        h("button", { className: pcls("b " + (ampState === "OPER" ? "sel" : "")), disabled: busy || !connected || on60mLow, onClick: () => act("POST", "/oper") }, "OPER"),
+        h("button", { className: pcls("b " + (ampState === "OPER" ? "sel" : "")), title: txTip, disabled: busy || !connected || on60mLow || txLock, onClick: () => act("POST", "/oper") }, "OPER"),
         h("button", { className: pcls("b " + (ampState === "STBY" ? "sel" : "")), disabled: busy || !connected, onClick: () => act("POST", "/stby") }, "STBY"),
         h("button", { className: pcls("b " + (tunerOn ? "sel" : "")), title: txTip, disabled: busy || !connected || txLock, onClick: () => act("POST", "/tuner", { enabled: !tunerOn }) }, tunerOn ? "TUNER ON" : "TUNER OFF"),
         h("button", { className: pcls("b " + (tuning ? "acc" : "")), disabled: busy || !connected, onClick: () => setTuneDialog(true) }, tuning ? "TUNING…" : "TUNE"),
@@ -515,7 +515,7 @@ function makePanel(callBackend) {
           ? "This powers up the IC-PW2 over CI-V."
           : "This powers down the IC-PW2. It will stop amplifying until powered back on."),
         h("div", { className: pcls("btns") },
-          h("button", { className: pcls("b " + (confirmPower ? "ok" : "danger")),
+          h("button", { className: pcls("b " + (confirmPower ? "ok" : "danger")), title: txTip, disabled: txLock,
             onClick: () => { const on = confirmPower; setConfirmPower(null); act("POST", "/power", { on }); } },
             confirmPower ? "Yes, power ON" : "Yes, power OFF"),
           h("button", { className: pcls("b"), onClick: () => setConfirmPower(null) }, "Cancel")))) : null;

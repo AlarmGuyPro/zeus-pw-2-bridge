@@ -5,7 +5,7 @@ over the amplifier's CI-V serial link. Adds an IC-PW2 panel with live metering,
 amplifier control, automatic band-follow, and a set of safety interlocks.
 
 - **Author:** KQ4WLR
-- **Version:** 1.1.0
+- **Version:** 1.1.1
 - **License:** GPL-2.0-or-later
 - **Platform:** Windows (win-x64)
 - **Requires:** Zeus with plugin radio-state support (WDSP 2.10 release or later),
@@ -128,10 +128,12 @@ features act only on the amplifier:
   temperature is checked about once a second during transmit as well.
 - **Protection alarm:** if the amp reports a protection fault, a prominent alarm
   is shown. (The amp stops transmitting on its own; the plugin surfaces it.)
-- **No relay switching under RF:** band, RF input, antenna, and tuner
-  in-line/bypass changes from the panel are locked while the radio is
-  transmitting. With "Inhibit band change during TX" on (the default),
-  band-follow also waits until TX drops before changing band.
+- **No relay switching under RF:** band, RF input, antenna, tuner
+  in-line/bypass, OPER, and main power on/off are locked while the radio is
+  transmitting. STBY is always available, including mid-transmission. With
+  "Inhibit band change during TX" on (the default), band-follow also waits
+  until TX drops before changing band; if you turn band-follow off during the
+  transmission, that deferred change is dropped.
 - **Stale-data failsafe:** if the amp stops responding, the panel drops to a
   clear "disconnected" state rather than showing frozen values, and attempts to
   reconnect automatically.

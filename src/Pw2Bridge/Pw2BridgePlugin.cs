@@ -28,7 +28,7 @@ namespace Zeus.Community.Pw2Bridge;
 public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
 {
     // Human-readable version; keep in sync with plugin.json "version".
-    private const string ManifestVersion = "1.1.0";
+    private const string ManifestVersion = "1.1.1";
 
     private IPluginContext? _ctx;
     private ILogger? _log;
@@ -242,6 +242,13 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
         string? pending;
         lock (_stateGate) { pending = _pendingBand; _pendingBand = null; }
         if (pending is null || _forced60mStby) return;
+        // Band-follow may have been switched off while we were transmitting;
+        // in that case the deferred change is dropped, not sent.
+        if (!_cfg.BandFollow)
+        {
+            Note("bridge", $"TX dropped — deferred band {pending} discarded (band-follow is off).");
+            return;
+        }
         Note("bridge", $"TX dropped — applying deferred band {pending}.");
         ForwardBand(pending);
     }
@@ -279,6 +286,8 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
     }
 
     private int _pollTick;
+    private const long TxSafetyIntervalMs = 1000; // temp + amp state during TX
+    private long _lastTxSafetyMs;                 // Environment.TickCount64 of the last TX safety read
     private int _powerMiss;
     private int _staleMiss;
     private int _recoverTick;
@@ -354,8 +363,12 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
                     bool txNow = _tx;
                     bool slow = !txNow && _pollTick % 4 == 0;
                     bool med  = !txNow && _pollTick % 2 == 0;
-                    int txSafetyEvery = Math.Max(1, 1000 / Math.Max(100, _cfg.PollMsTx));
-                    bool txSafety = txNow && _pollTick % txSafetyEvery == 0;
+                    // Safety reads during TX go by elapsed time, not cycle count:
+                    // on a slow link a cycle can take much longer than PollMsTx,
+                    // and counting cycles would stretch the cadence past 1 s.
+                    long nowMs = Environment.TickCount64;
+                    bool txSafety = txNow && nowMs - _lastTxSafetyMs >= TxSafetyIntervalMs;
+                    if (txSafety) _lastTxSafetyMs = nowMs;
 
                     // While an interlock is holding STBY, read the amp state every
                     // cycle so a front-panel OPER press is corrected immediately.
@@ -431,6 +444,14 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
                             _overheatLatched = true;
                             // Send STBY unconditionally: on a TX cycle the amp state
                             // may not have been read, and STBY is always safe.
+                            // STBY under RF is intentional. The IC-PW2 makes the
+                            // same OPER→off transition by itself mid-transmission:
+                            // its own TEMP protection turns the amplifier circuit
+                            // off while transmitting (Instruction Manual p. 4-6),
+                            // and a manual tune turns it off temporarily (p. 4-1).
+                            // The CI-V guide does not separately document STBY-under-
+                            // RF sequencing, so this relies on the amp handling that
+                            // transition the same way it does for its own protection.
                             var (ok, _) = amp.SetAmpCircuit(false);
                             if (ok) ampSt = 0;
                             Note("warn", $"OVERHEAT {tempForCompare:F1}°{_cfg.TempUnit} ≥ {_cfg.MaxTemp}°{_cfg.TempUnit} — forced STBY ({(ok ? "OK" : "FAIL")}), latched.");
@@ -818,6 +839,9 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
         // Main power on/off (18 01 / 18 00). Highest-consequence write.
         endpoints.MapPost("power", (PowerRequest body) =>
         {
+            // Either direction is refused under RF: power-off would drop the amp
+            // mid-transmission, power-on would bring it up while RF is present.
+            if (RefuseWhileTx($"Main power {(body.On ? "ON" : "OFF")}") is { } busy) return busy;
             if (_amp is not { IsConnected: true }) return Results.BadRequest(new { ok = false, message = "not connected" });
             var (ok, msg) = _amp.SetMainPower(body.On);
             if (ok) lock (_stateGate) _telemetry.PoweredOn = body.On;
@@ -891,8 +915,10 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
     }
 
     /// <summary>
-    /// Relay-switching writes (band, input, antenna, tuner in-line) are refused
-    /// while the radio is transmitting: 409 with a message the panel shows.
+    /// Relay-switching writes (band, input, antenna, tuner in-line, OPER, main
+    /// power) are refused while the radio is transmitting: 409 with a message
+    /// the panel shows. STBY is deliberately NOT refused: it is the safe
+    /// direction and must always be available to the operator.
     /// </summary>
     private IResult? RefuseWhileTx(string what)
     {
@@ -903,6 +929,9 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
 
     private IResult AmpWrite(bool oper)
     {
+        // OPER is locked under RF like the other relay switches. STBY is always
+        // allowed (the safe direction), including mid-transmission.
+        if (oper && RefuseWhileTx("OPER") is { } busy) return busy;
         if (_amp is not { IsConnected: true }) return Results.BadRequest(new { ok = false, message = "not connected" });
         // Enforce the 60m low-power rule: block OPER while parked in 60M-NEW.
         if (oper && _forced60mStby)

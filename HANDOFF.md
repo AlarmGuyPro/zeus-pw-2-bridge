@@ -6,8 +6,8 @@ Zeus's radio state.
 
 - **Plugin ID:** `com.kq4wlr.zeus.pw2bridge`
 - **Author:** KQ4WLR
-- **Current version:** 1.1.0 (review fixes for catalog PR #8; 1.0.0 was the
-  original submission, 2026-09-27)
+- **Current version:** 1.1.1 (second round of PR #8 review fixes; 1.1.0 was
+  the first round, 1.0.0 the original submission, 2026-09-27)
 - **SDK:** ABI 1, minVersion 1.5.0
 - **Platform:** Windows (win-x64) first; Linux/Pi possible later (see Porting)
 - **License intent:** GPL-2.0-or-later
@@ -47,7 +47,8 @@ repo, `AlarmGuyPro/KQ4WLR-Bridger`; don't mix them up.
 | Version | Date | SHA-256 of ZIP | Catalog PR | State |
 |---|---|---|---|---|
 | 1.0.0 | 2026-09-27 | `7b29ca283575b7d0cca903e72c5087c8c9bdecfe44ab91243ed221dc756c361f` | #8 | Changes requested by KB2UKA (2026-09-28); superseded by 1.1.0 |
-| 1.1.0 | 2026-09-28 | `4587a5c98be1a2be2ea96eb3efa8a58f1e7df2a56c978bc0840d0e1584a82449` | #8 (updated; registry entry replaced 1.0.0) | Hardware-tested, released, awaiting re-review/custody |
+| 1.1.0 | 2026-09-28 | `4587a5c98be1a2be2ea96eb3efa8a58f1e7df2a56c978bc0840d0e1584a82449` | #8 (updated; registry entry replaced 1.0.0) | Released; KB2UKA re-review (2026-09-29) asked for OPER/power TX lock → 1.1.1 |
+| 1.1.1 | — | — | #8 (to update) | Code pushed (OPER + main power locked during TX, deferred-band recheck, time-based TX safety cadence). Needs build, hardware test, release |
 
 Update this table on every release and when a PR merges.
 
@@ -324,9 +325,19 @@ don't undo them.
   operator manually presses STBY (does NOT auto-restore on cool-down, by
   request). Temperature and amp state are read about once a second **during
   TX** too (`txSafety` cadence), since long transmissions are when it heats up.
-- **No relay switching under RF:** the band, input, antenna, and tuner
-  in-line endpoints return 409 while `_tx` is true; the UI greys those
-  controls. Band-follow defers via `_pendingBand` (when TX-inhibit is on).
+- **No relay switching under RF:** the band, input, antenna, tuner
+  in-line, OPER, and main power (on and off) endpoints return 409 while `_tx`
+  is true; the UI greys those controls (and the power confirm button). **STBY
+  is never refused** (safe direction). Band-follow defers via `_pendingBand`
+  (when TX-inhibit is on); `ApplyPendingBand` drops the deferred band if
+  band-follow was turned off during TX (1.1.1).
+- **STBY under RF (overheat trip):** intentional, confirmed with KB2UKA. The
+  manual shows the amp itself turns the amplifier circuit off mid-TX on its own
+  TEMP protection (IM p. 4-6) and during manual tune (p. 4-1). CI-V STBY under
+  RF is not separately documented; see the comment at the overheat trip.
+- **TX safety cadence is time-based** (1.1.1): temperature + amp state are read
+  when >= 1 s has elapsed (`Environment.TickCount64`), not every N cycles, so a
+  slow link can't stretch it.
 - **Settings are validated** (POST config returns 400 and applies nothing if
   any field is bad; stored settings are repaired by `Sanitize()` at load).
   Changing temp unit without a new limit converts the limit.
