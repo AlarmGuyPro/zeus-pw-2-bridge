@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
+# Adapted for portable serial dependency packaging, 2026-09-29 (KB2UKA).
+#requires -Version 7
 [CmdletBinding()]
 param(
     [ValidateSet("Release", "Debug")]
     [string] $Configuration = "Release",
     [string] $LicensePath,
-    [string[]] $ManagedDependency = @(),
+    [string[]] $ManagedDependency = @("System.IO.Ports.dll"),
     [string[]] $AdditionalAsset = @()
 )
 
@@ -190,17 +192,20 @@ function Reserve-StagedPath {
 }
 
 function Copy-PackageAsset {
-    param([Parameter(Mandatory)][string] $RelativePath)
+    param(
+        [Parameter(Mandatory)][string] $RelativePath,
+        [string] $SourceRoot = $PSScriptRoot
+    )
     $packagePath = Get-SafePackagePath -Path $RelativePath
     if (-not $assetRoots.Add($packagePath)) {
         throw "Package asset was selected more than once: $packagePath"
     }
-    $sourcePath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot $packagePath))
+    $sourcePath = [IO.Path]::GetFullPath((Join-Path $SourceRoot $packagePath))
     $destinationPath = [IO.Path]::GetFullPath((Join-Path $stagingRoot $packagePath))
-    Assert-StrictChildPath -Parent $PSScriptRoot -Candidate $sourcePath -Label "Package asset source"
+    Assert-StrictChildPath -Parent $SourceRoot -Candidate $sourcePath -Label "Package asset source"
     Assert-StrictChildPath -Parent $stagingRoot -Candidate $destinationPath -Label "Package asset destination"
     if (-not (Test-Path -LiteralPath $sourcePath)) { throw "Package asset not found: $packagePath" }
-    Assert-NoLinkedPathComponents -Root $PSScriptRoot -Candidate $sourcePath -Label "Package asset source"
+    Assert-NoLinkedPathComponents -Root $SourceRoot -Candidate $sourcePath -Label "Package asset source"
     $sourceItems = @(Get-Item -LiteralPath $sourcePath -Force)
     if ($sourceItems[0].PSIsContainer) {
         $sourceItems += @(Get-ChildItem -LiteralPath $sourcePath -Recurse -Force)
@@ -209,18 +214,24 @@ function Copy-PackageAsset {
         throw "Linked package assets are forbidden: $packagePath"
     }
     $sourceItems = @($sourceItems | Sort-Object `
-        @{ Expression = { ([IO.Path]::GetRelativePath($PSScriptRoot, $_.FullName).Replace("\", "/").Split("/")).Count } }, `
+        @{ Expression = { ([IO.Path]::GetRelativePath($SourceRoot, $_.FullName).Replace("\", "/").Split("/")).Count } }, `
         @{ Expression = { if ($_.PSIsContainer) { 0 } else { 1 } } })
     foreach ($sourceItem in $sourceItems) {
-        $sourceRelative = [IO.Path]::GetRelativePath($PSScriptRoot, $sourceItem.FullName).Replace("\", "/")
+        $sourceRelative = [IO.Path]::GetRelativePath($SourceRoot, $sourceItem.FullName).Replace("\", "/")
         [void](Reserve-StagedPath -RelativePath $sourceRelative -IsDirectory $sourceItem.PSIsContainer)
     }
     New-Item -ItemType Directory -Path (Split-Path -Parent $destinationPath) -Force | Out-Null
     Copy-Item -LiteralPath $sourcePath -Destination $destinationPath -Recurse -Force
 }
 
-dotnet build $project -c $Configuration --nologo
-if ($LASTEXITCODE -ne 0) { throw "dotnet build failed: $LASTEXITCODE" }
+# Let dotnet resolve the project from its working directory. Passing an absolute
+# path through macOS /tmp -> /private/tmp can mix aliases in incremental outputs.
+Push-Location -LiteralPath $PSScriptRoot
+try {
+    dotnet build ([IO.Path]::GetFileName($project)) -c $Configuration --nologo
+    if ($LASTEXITCODE -ne 0) { throw "dotnet build failed: $LASTEXITCODE" }
+}
+finally { Pop-Location }
 if (-not (Test-Path -LiteralPath $assembly -PathType Leaf)) {
     throw "Entrypoint assembly was not produced: $assembly"
 }
@@ -232,12 +243,13 @@ Copy-Item -LiteralPath $manifestPath -Destination $stagingRoot -Force
 [void](Reserve-StagedPath -RelativePath $entrypointName)
 Copy-Item -LiteralPath $assembly -Destination $stagingRoot -Force
 $depsFile = [IO.Path]::ChangeExtension($assembly, ".deps.json")
-if (Test-Path -LiteralPath $depsFile -PathType Leaf) {
-    Assert-NotLinkedPath -Path $depsFile -Label "Dependency manifest"
-    Assert-NoLinkedPathComponents -Root $PSScriptRoot -Candidate $depsFile -Label "Dependency manifest"
-    [void](Reserve-StagedPath -RelativePath ([IO.Path]::GetFileName($depsFile)))
-    Copy-Item -LiteralPath $depsFile -Destination $stagingRoot -Force
+if (-not (Test-Path -LiteralPath $depsFile -PathType Leaf)) {
+    throw "Dependency manifest was not produced: $depsFile"
 }
+Assert-NotLinkedPath -Path $depsFile -Label "Dependency manifest"
+Assert-NoLinkedPathComponents -Root $PSScriptRoot -Candidate $depsFile -Label "Dependency manifest"
+[void](Reserve-StagedPath -RelativePath ([IO.Path]::GetFileName($depsFile)))
+Copy-Item -LiteralPath $depsFile -Destination $stagingRoot -Force
 foreach ($dependencyName in $ManagedDependency) {
     if ($dependencyName -cnotmatch "^[A-Za-z0-9][A-Za-z0-9._-]*\.dll$" -or
         $dependencyName -ieq $entrypointName -or
@@ -254,6 +266,21 @@ foreach ($dependencyName in $ManagedDependency) {
     $dependencyDestination = Join-Path $stagingRoot $dependencyName
     [void](Reserve-StagedPath -RelativePath $dependencyName)
     Copy-Item -LiteralPath $dependencyPath -Destination $dependencyDestination -Force
+}
+# Preserve the complete runtime graph, copying only assets owned by this build.
+# Directory-wide copies can accidentally include residue from older builds.
+$dependencyManifest = Get-Content -Raw -LiteralPath $depsFile | ConvertFrom-Json -AsHashtable
+$runtimeAssets = @($dependencyManifest.targets.Values | ForEach-Object {
+    $_.Values | ForEach-Object {
+        if ($_.Contains('runtimeTargets')) { $_.runtimeTargets.Keys }
+    }
+} | Sort-Object -Unique)
+if ($runtimeAssets.Count -eq 0) { throw "Dependency manifest contains no runtime assets" }
+foreach ($asset in $runtimeAssets) {
+    if (-not $asset.StartsWith('runtimes/', [StringComparison]::Ordinal)) {
+        throw "Unexpected runtime asset path: $asset"
+    }
+    Copy-PackageAsset -RelativePath $asset -SourceRoot $assemblyRoot
 }
 [void](Reserve-StagedPath -RelativePath "README.md")
 $readmePath = Join-Path $PSScriptRoot "README.md"
