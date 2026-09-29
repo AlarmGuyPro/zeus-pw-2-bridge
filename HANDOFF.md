@@ -47,8 +47,8 @@ repo, `AlarmGuyPro/KQ4WLR-Bridger`; don't mix them up.
 | Version | Date | SHA-256 of ZIP | Catalog PR | State |
 |---|---|---|---|---|
 | 1.0.0 | 2026-09-27 | `7b29ca283575b7d0cca903e72c5087c8c9bdecfe44ab91243ed221dc756c361f` | #8 | Changes requested by KB2UKA (2026-09-28); superseded by 1.1.0 |
-| 1.1.0 | 2026-09-28 | `4587a5c98be1a2be2ea96eb3efa8a58f1e7df2a56c978bc0840d0e1584a82449` | #8 (updated; registry entry replaced 1.0.0) | Released; KB2UKA re-review (2026-09-29) asked for OPER/power TX lock → 1.1.1 |
-| 1.1.1 | — | — | #8 (to update) | Code pushed (OPER + main power locked during TX, STBY-during-TX deferred to unkey, deferred-band recheck, time-based TX safety cadence). Needs build, hardware test, release |
+| 1.1.0 | 2026-09-28 | `4587a5c98be1a2be2ea96eb3efa8a58f1e7df2a56c978bc0840d0e1584a82449` | #8 | **Merged — listed in the official catalog.** KB2UKA's follow-up review (2026-09-29) → 1.1.1 |
+| 1.1.1 | 2026-09-29 | `b1e9863b35013bf20469a1ec14d3fa214c665a1aeefc28fe99aa229f24ebf341` | new PR from fork branch `community/com.kq4wlr.zeus.pw2bridge-1.1.1` | Hardware-tested (TX lockout, STBY at unkey, overheat during TX), released, hash verified. Registry branch pushed; PR to open |
 
 Update this table on every release and when a PR merges.
 
