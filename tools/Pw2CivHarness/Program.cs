@@ -21,6 +21,7 @@ using Zeus.Community.Pw2Bridge;
 return args.Length == 0 ? Usage() : args[0].ToLowerInvariant() switch
 {
     "selftest" => SelfTest.Run(),
+    "package-smoke" when args.Length == 2 => PackageSmoke.Run(args[1]),
     "ports"    => Interactive.ListPorts(),
     "serial"   => Interactive.Run(args),
     _          => Usage(),
@@ -32,6 +33,7 @@ static int Usage()
         IC-PW2 CI-V harness
 
           pw2civ selftest                       run protocol assertions (no hardware)
+          pw2civ package-smoke <directory>      load unpacked package (no hardware)
           pw2civ ports                          list COM ports
           pw2civ serial <COMx> [baud] [addrHex] interactive session with the amp
 

@@ -6,7 +6,9 @@ component, which remains under its own license.
 
 ## System.IO.Ports
 
-- Package: `System.IO.Ports` 9.0.0 (NuGet), file `System.IO.Ports.dll`
+- Packages: `System.IO.Ports` 9.0.0 and its `runtime.*.System.IO.Ports`
+  dependencies (NuGet): `System.IO.Ports.dll` and the managed/native assets
+  under `runtimes/`
 - Source: https://github.com/dotnet/runtime
 - License: MIT
 
@@ -42,5 +44,5 @@ SOFTWARE.
 public SDK snapshot (ABI 1 / SDK 1.5.0) from
 https://github.com/Zeus-SDR/zeus-community-features, GPL-2.0-or-later. It is
 referenced at build time only; `Zeus.Plugins.Contracts.dll` is not included in
-the package. `build-package.ps1` is copied unmodified from that repository's
-`templates/hello-world/`.
+the package. `build-package.ps1` was adapted from that repository's
+`templates/hello-world/` for portable serial packaging on 2026-09-29 by KB2UKA.
