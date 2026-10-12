@@ -173,7 +173,8 @@ public static class Pw2Civ
     /// straight line from 0 to the guide's 161=500W point read ~70% high around
     /// 100-200 W. Points up to 200 W were measured on the operator's amp
     /// (KQ4WLR, 2026-10-12, amp meter vs. raw 15 11); 161=500W and 201=1kW are
-    /// the guide's (p.4). Between points we interpolate linearly.
+    /// the guide's (p.4), and were confirmed in OPER (500/750/1000 W matched the
+    /// amp's meter). Between points we interpolate linearly.
     /// </summary>
     private static readonly (int Raw, double Watts)[] PoCal =
     {

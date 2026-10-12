@@ -102,6 +102,8 @@ static class SelfTest
         Check("Po raw 58 = 100W",  Pw2Civ.RawToWatts(58).ToString(),  "100");
         Check("Po raw 83 ~ 146W",  Pw2Civ.RawToWatts(83).ToString(),  "146");
         Check("Po raw 94 = 200W",  Pw2Civ.RawToWatts(94).ToString(),  "200");
+        // OPER on the amp 2026-10-12: 500/750/1000 W matched the amp's meter.
+        Check("Po raw 181 = 750W", Pw2Civ.RawToWatts(181).ToString(), "750");
         Check("Po raw 255 caps 1100W", Pw2Civ.RawToWatts(255).ToString(), "1100");
 
         Check("SWR raw 0 = 1.0",   Pw2Civ.RawToSwr(0).ToString("0.0"),   "1.0");
