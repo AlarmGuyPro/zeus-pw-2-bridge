@@ -96,6 +96,13 @@ static class SelfTest
         Check("Po raw 0 = 0W",     Pw2Civ.RawToWatts(0).ToString(),   "0");
         Check("Po raw 161 = 500W", Pw2Civ.RawToWatts(161).ToString(), "500");
         Check("Po raw 201 = 1000W",Pw2Civ.RawToWatts(201).ToString(), "1000");
+        // Measured on the amp 2026-10-12 (amp meter vs. raw). 1.1.1 showed 258 W
+        // here for a real ~150 W; these pin the low end so it can't drift back.
+        Check("Po raw 13 = 10W",   Pw2Civ.RawToWatts(13).ToString(),  "10");
+        Check("Po raw 58 = 100W",  Pw2Civ.RawToWatts(58).ToString(),  "100");
+        Check("Po raw 83 ~ 146W",  Pw2Civ.RawToWatts(83).ToString(),  "146");
+        Check("Po raw 94 = 200W",  Pw2Civ.RawToWatts(94).ToString(),  "200");
+        Check("Po raw 255 caps 1100W", Pw2Civ.RawToWatts(255).ToString(), "1100");
 
         Check("SWR raw 0 = 1.0",   Pw2Civ.RawToSwr(0).ToString("0.0"),   "1.0");
         Check("SWR raw 40 = 1.5",  Pw2Civ.RawToSwr(40).ToString("0.0"),  "1.5");

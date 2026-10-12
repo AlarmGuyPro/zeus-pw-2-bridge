@@ -28,7 +28,7 @@ namespace Zeus.Community.Pw2Bridge;
 public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
 {
     // Human-readable version; keep in sync with plugin.json "version".
-    private const string ManifestVersion = "1.1.1";
+    private const string ManifestVersion = "1.1.2";
 
     private IPluginContext? _ctx;
     private ILogger? _log;

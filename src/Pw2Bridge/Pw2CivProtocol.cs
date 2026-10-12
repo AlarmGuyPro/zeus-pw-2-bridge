@@ -167,13 +167,34 @@ public static class Pw2Civ
     // ── Meter calibration curves (guide p.4) ────────────────────────────────
     // Raw meter value is a BCD 0..255 read via command 15 <sub>.
 
-    /// <summary>Po: 0=0W, 161=500W, 201=1kW. Piecewise per the guide's cal points.</summary>
+    /// <summary>
+    /// Po calibration table: (raw, watts). The meter is not linear in watts
+    /// (it reads roughly like RF voltage, so it is stretched at low power), so a
+    /// straight line from 0 to the guide's 161=500W point read ~70% high around
+    /// 100-200 W. Points up to 200 W were measured on the operator's amp
+    /// (KQ4WLR, 2026-10-12, amp meter vs. raw 15 11); 161=500W and 201=1kW are
+    /// the guide's (p.4). Between points we interpolate linearly.
+    /// </summary>
+    private static readonly (int Raw, double Watts)[] PoCal =
+    {
+        (0, 0), (13, 10), (26, 25), (42, 50), (58, 100), (85, 150), (94, 200),
+        (161, 500), (201, 1000),
+    };
+
+    /// <summary>Raw Po meter (15 11) to watts, via <see cref="PoCal"/>. Capped at 1100 W.</summary>
     public static int RawToWatts(int raw)
     {
         raw = Math.Max(0, raw);
-        if (raw <= 161) return (int)Math.Round(raw * 500.0 / 161.0);
-        if (raw <= 201) return (int)Math.Round(500.0 + (raw - 161) * 500.0 / 40.0);
-        return Math.Min(1100, (int)Math.Round(500.0 + (raw - 161) * 500.0 / 40.0));
+        for (int i = 0; i < PoCal.Length - 1; i++)
+        {
+            var (r0, w0) = PoCal[i];
+            var (r1, w1) = PoCal[i + 1];
+            if (raw <= r1) return (int)Math.Round(w0 + (raw - r0) * (w1 - w0) / (r1 - r0));
+        }
+        // Above the last point: extend the top segment's slope.
+        var (ra, wa) = PoCal[^2];
+        var (rb, wb) = PoCal[^1];
+        return Math.Min(1100, (int)Math.Round(wb + (raw - rb) * (wb - wa) / (rb - ra)));
     }
 
     /// <summary>SWR: 0=1.0, 40=1.5, 80=2.0, 120=3.0. Piecewise; display capped at 9.99.</summary>
