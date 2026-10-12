@@ -6,8 +6,8 @@ Zeus's radio state.
 
 - **Plugin ID:** `com.kq4wlr.zeus.pw2bridge`
 - **Author:** KQ4WLR
-- **Current version:** 1.1.1 (second round of PR #8 review fixes; 1.1.0 was
-  the first round, 1.0.0 the original submission, 2026-09-27)
+- **Current version:** 1.1.2 (released 2026-10-12, not yet in the catalog;
+  the catalog still offers 1.1.0, see the release history)
 - **SDK:** ABI 1, minVersion 1.5.0
 - **Platform:** Windows (win-x64) first; Linux/Pi possible later (see Porting)
 - **License intent:** GPL-2.0-or-later
@@ -49,7 +49,8 @@ repo, `AlarmGuyPro/KQ4WLR-Bridger`; don't mix them up.
 |---|---|---|---|---|
 | 1.0.0 | 2026-09-27 | `7b29ca283575b7d0cca903e72c5087c8c9bdecfe44ab91243ed221dc756c361f` | #8 | Changes requested by KB2UKA (2026-09-28); superseded by 1.1.0 |
 | 1.1.0 | 2026-09-28 | `4587a5c98be1a2be2ea96eb3efa8a58f1e7df2a56c978bc0840d0e1584a82449` | #8 | **Merged — listed in the official catalog.** KB2UKA's follow-up review (2026-09-29) → 1.1.1 |
-| 1.1.1 | 2026-09-29 | `b1e9863b35013bf20469a1ec14d3fa214c665a1aeefc28fe99aa229f24ebf341` | [#12](https://github.com/Zeus-SDR/zeus-community-features/pull/12) (branch `community/com.kq4wlr.zeus.pw2bridge-1.1.1`) | Hardware-tested (TX lockout, STBY at unkey, overheat during TX), released, hash verified, all catalog checks pass. PR opened 2026-09-29; awaiting review/custody |
+| 1.1.1 | 2026-09-29 | `b1e9863b35013bf20469a1ec14d3fa214c665a1aeefc28fe99aa229f24ebf341` | [#12](https://github.com/Zeus-SDR/zeus-community-features/pull/12) | Merged 2026-09-29 by N9WAR **before custody**, so its download URL 404'd. **Withdrawn** by KB2UKA 2026-09-30 (catalog PR #17); never scanned. The catalog offers 1.1.0 |
+| 1.1.2 | 2026-10-12 | `155f4a6f47908e807c0ee77b1d438e0d5659b04b6e11549c43fd767e53bf27d9` | none | Po meter recalibrated (read ~70% high below 500 W). Hardware-tested, released, hash verified. **Can't be submitted as is**: built before `zeus-build.json`/`global.json` existed, and blocked by the two questions in "Open items". Next catalog version will be 1.1.3 |
 
 Update this table on every release and when a PR merges.
 
@@ -135,6 +136,25 @@ blue Windows PowerShell), Git, and Node.js LTS. Hardware: Windows 11 x64, Zeus
   run" before CI runs.
 
 ### Open items
+
+- **Catalog intake changed 2026-09-29** (CONTRIBUTING §2, §6, §8): every new
+  version needs a `source` block, a `zeus-build.json` + `global.json` in this
+  repo, a Linux rebuild-from-source that matches the ZIP, and a package
+  security scan. Two blockers for this plugin, raised with KB2UKA (2026-10-12):
+  1. The bundled `System.IO.Ports.dll` (Microsoft, NuGet 9.0.0) P/Invokes
+     kernel32, and the scan's `pinvoke` rule is a fail. Needs a maintainer
+     allowlist entry, or the host supplies System.IO.Ports so we stop bundling.
+  2. `RuntimeIdentifier`/`AppendRuntimeIdentifierToOutputPath` aren't on the
+     rebuild check's MSBuild allowlist (`tools/SourceRebuild.psm1`). Without
+     them the Windows serial implementation lands under `runtimes/win/`, which
+     only works if the Zeus loader honours `.deps.json` runtime targets.
+  The harness csproj also sets `RuntimeIdentifier` and has PackageReferences
+  without a lock file; it'll need the same fix. Windows Git writes CRLF into
+  text files in the ZIP, which the byte-for-byte rebuild compare will reject,
+  so add `.gitattributes` (`* text=auto eol=lf`) and build the release ZIP on
+  Linux (CI) from the tagged commit. The PowerStation repo
+  (`AlarmGuyPro/Zeus-PowerStation`) went through the new gates and is the
+  working example (`zeus-build.json`, `global.json`, CI).
 
 - PR #8: KB2UKA requested changes on 1.0.0 (2026-09-28). All six items plus
   the minor one are fixed in 1.1.0 (see §5 and the 1.1.0 notes below). Next:
