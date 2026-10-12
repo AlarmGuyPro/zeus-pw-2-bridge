@@ -171,15 +171,16 @@ public static class Pw2Civ
     /// Po calibration table: (raw, watts). The meter is not linear in watts
     /// (it reads roughly like RF voltage, so it is stretched at low power), so a
     /// straight line from 0 to the guide's 161=500W point read ~70% high around
-    /// 100-200 W. Points up to 200 W were measured on the operator's amp
-    /// (KQ4WLR, 2026-10-12, amp meter vs. raw 15 11); 161=500W and 201=1kW are
-    /// the guide's (p.4), and were confirmed in OPER (500/750/1000 W matched the
-    /// amp's meter). Between points we interpolate linearly.
+    /// 100-250 W. Measured on the operator's amp (KQ4WLR, 2026-10-12, amp meter
+    /// vs. raw 15 11): 10-200 W in STBY, 250 W in OPER. OPER at 100 W gave raw
+    /// ~60, matching STBY's 58, so both modes share one scale. 161=500W and
+    /// 201=1kW are the guide's (p.4), confirmed in OPER along with 750 W.
+    /// Between points we interpolate linearly.
     /// </summary>
     private static readonly (int Raw, double Watts)[] PoCal =
     {
         (0, 0), (13, 10), (26, 25), (42, 50), (58, 100), (85, 150), (94, 200),
-        (161, 500), (201, 1000),
+        (121, 250), (161, 500), (201, 1000),
     };
 
     /// <summary>Raw Po meter (15 11) to watts, via <see cref="PoCal"/>. Capped at 1100 W.</summary>
