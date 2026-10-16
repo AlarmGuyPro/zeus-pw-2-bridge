@@ -7,7 +7,7 @@ amplifier control, automatic band-follow, and a set of safety interlocks.
 - **Author:** KQ4WLR
 - **Version:** 1.1.1
 - **License:** GPL-2.0-or-later
-- **Platform:** Windows (win-x64)
+- **Platforms:** Windows x64, macOS x64/arm64, Linux x64/arm64 and Raspberry Pi (arm/arm64)
 - **Requires:** Zeus with plugin radio-state support (WDSP 2.10 release or later),
   and a USB-serial connection to the amplifier.
 
@@ -34,10 +34,19 @@ amplifier control, automatic band-follow, and a set of safety interlocks.
 The IC-PW2's CI-V is a **serial** interface. Connect a USB-to-serial cable from
 your PC to the amplifier's **[REMOTE AUX]** jack (a 3.5 mm mono plug; wire per
 the IC-PW2 CI-V Reference Guide — RTS tied to CTS, no flow control). The plugin
-talks to that COM port.
+talks to that serial port.
 
-In the panel's **Settings**, set the COM port, baud, and CI-V address (default
+In the panel's **Settings**, select the serial port, baud, and CI-V address (default
 AA), then Connect. These are remembered.
+
+Port names depend on the OS: `COM10` on Windows, `/dev/cu.usbserial-*` on
+macOS, and `/dev/ttyUSB0` or `/dev/ttyACM0` on Linux. Select your adapter in
+the existing port picker; a saved Windows COM name must be changed when moving
+settings to another OS. On Linux, the account running Zeus needs access to the
+serial device (commonly the `dialout` or `uucp` group, depending on the distro).
+Install the adapter manufacturer's driver if the device does not appear.
+The ZIP includes the required serial libraries; amplifier operation on macOS,
+Linux and Raspberry Pi still needs confirmation with real hardware.
 
 ### Baud rate — set it explicitly to 19200 for best speed
 
@@ -169,7 +178,7 @@ can confirm which build is loaded.
 ## Known limitations
 
 - **Serial only** (see the note above about the LAN port).
-- **Windows (win-x64)** for now; Linux/Raspberry Pi packaging is possible later.
+- Hardware serial operation must be verified with your adapter on each OS.
 - Metering is sampled/polled as described above.
 - A drive-level interlock (auto-STBY if the radio's drive exceeds a set limit) is
   planned but depends on Zeus exposing drive level to plugins; it is not yet

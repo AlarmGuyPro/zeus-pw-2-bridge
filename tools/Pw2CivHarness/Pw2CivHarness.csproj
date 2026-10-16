@@ -7,10 +7,13 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>Zeus.Community.Pw2Bridge.Harness</RootNamespace>
     <AssemblyName>pw2civ</AssemblyName>
-    <!-- Windows-first: serial ships in this package. -->
-    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>false</SelfContained>
   </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="../../sdk/Openhpsdr.Zeus.Plugins.Contracts/Zeus.Plugins.Contracts.csproj" />
+  </ItemGroup>
 
   <ItemGroup>
     <!-- Reference the SAME source files the plugin uses, so a fix here is a fix
@@ -21,9 +24,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="System.IO.Ports" Version="9.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Logging" Version="9.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="9.0.0" />
+    <PackageReference Include="System.IO.Ports" Version="10.0.0" />
   </ItemGroup>
 
 </Project>
