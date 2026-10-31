@@ -896,7 +896,14 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
         });
 
         // List COM ports so the UI can offer a picker.
-        endpoints.MapGet("ports", () => Results.Ok(SerialCivTransport.ListPorts()));
+        // On a host where the bundled serial implementation can't load (the
+        // win-x64 package installed on Linux/macOS, using the TCP transport),
+        // this must still answer so the settings panel loads.
+        endpoints.MapGet("ports", () =>
+        {
+            try { return Results.Ok(SerialCivTransport.ListPorts()); }
+            catch { return Results.Ok(Array.Empty<string>()); }
+        });
 
         // Amp circuit control. These never key TX.
         endpoints.MapPost("oper", () => AmpWrite(true));

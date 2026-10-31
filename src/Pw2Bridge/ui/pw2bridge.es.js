@@ -301,7 +301,7 @@ function makePanel(callBackend) {
         try {
           const [c, p] = await Promise.all([
             api(callBackend, "GET", "/config"),
-            api(callBackend, "GET", "/ports"),
+            api(callBackend, "GET", "/ports").catch(() => []), // no serial on this host is not an error
           ]);
           if (!alive) return;
           setCfg(c); setPorts(p || []);
