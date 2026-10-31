@@ -28,7 +28,7 @@ namespace Zeus.Community.Pw2Bridge;
 public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
 {
     // Human-readable version; keep in sync with plugin.json "version".
-    private const string ManifestVersion = "1.1.2";
+    private const string ManifestVersion = "1.2.0";
 
     private IPluginContext? _ctx;
     private ILogger? _log;
@@ -568,10 +568,12 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
                     if (_recoverTick >= Math.Max(1, (int)(3000.0 / Math.Max(250, _cfg.PollMsIdle))))
                     {
                         _recoverTick = 0;
-                        var (ok, _) = _amp is not null ? _amp.Connect(_cfg.Port, _cfg.Baud, _cfg.StopBits) : (false, "");
+                        NoteLinkErrorOnce();
+                        var (ok, _) = _amp is not null ? OpenLink(_amp) : (false, "");
                         if (ok)
                         {
                             Note("info", "Recovery: reconnected.");
+                            _lastNotedLinkError = "";
                             ScheduleSettle(); // same post-connect steps as a manual connect
                         }
                     }
@@ -613,10 +615,38 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
     private (bool ok, string message) TryConnect()
     {
         if (_amp is null) return (false, "not initialized");
-        var (ok, msg) = _amp.Connect(_cfg.Port, _cfg.Baud, _cfg.StopBits);
-        Note(ok ? "info" : "warn", $"Connect {_cfg.Port} @ {_cfg.Baud}: {(ok ? "OK" : msg)}");
+        var (ok, msg) = OpenLink(_amp);
+        Note(ok ? "info" : "warn", $"Connect {LinkTarget()}: {(ok ? "OK" : msg)}");
         if (ok) ScheduleSettle();
         return (ok, msg);
+    }
+
+    /// <summary>Open the configured link (serial or TCP). No logging; callers decide.</summary>
+    private (bool ok, string message) OpenLink(Pw2CivSerial amp)
+    {
+        if (_cfg.Transport == "tcp")
+        {
+            if (string.IsNullOrWhiteSpace(_cfg.TcpHost)) return (false, "no serial server host configured");
+            return amp.ConnectTcp(_cfg.TcpHost, _cfg.TcpPort);
+        }
+        return amp.Connect(_cfg.Port, _cfg.Baud, _cfg.StopBits);
+    }
+
+    /// <summary>Human description of where the link points, for logs and status.</summary>
+    private string LinkTarget() =>
+        _cfg.Transport == "tcp" ? $"tcp://{_cfg.TcpHost}:{_cfg.TcpPort}" : $"{_cfg.Port} @ {_cfg.Baud}";
+
+    // Last link error surfaced to the event log, so a serial server that keeps
+    // refusing us (port held by another station) is reported once, not every
+    // 3 s recovery attempt.
+    private string _lastNotedLinkError = "";
+
+    private void NoteLinkErrorOnce()
+    {
+        var err = _amp?.LastError ?? "";
+        if (err.Length == 0 || err == _lastNotedLinkError) return;
+        _lastNotedLinkError = err;
+        Note("warn", $"Link: {err}");
     }
 
     /// <summary>
@@ -692,6 +722,9 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
                 {
                     connected = t.Connected,
                     port = _cfg.Port,
+                    transport = _cfg.Transport,
+                    link = LinkTarget(),
+                    linkError = t.Connected ? "" : (_amp?.LastError ?? ""),
                     ampState = t.AmpState,
                     detectedBand = _detectedBand,
                     detectedBandDisplay = BandPlan.Display(_detectedBand),
@@ -755,8 +788,17 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
         {
             var errors = new List<string>();
 
+            string? transport = body.Transport?.Trim().ToLowerInvariant();
+            if (transport is not null && transport != "serial" && transport != "tcp")
+                errors.Add("Transport must be serial or tcp.");
+
             string? port = body.Port?.Trim();
             if (body.Port is not null && port!.Length == 0) errors.Add("Port must not be empty.");
+
+            string? tcpHost = body.TcpHost?.Trim();
+            if (tcpHost is not null && tcpHost.Length > 0 && Uri.CheckHostName(tcpHost) == UriHostNameType.Unknown)
+                errors.Add("TcpHost must be a host name or IP address.");
+            if (body.TcpPort is int tp && (tp < 1 || tp > 65535)) errors.Add("TcpPort must be 1..65535.");
 
             if (body.Baud is int b && !ValidBauds.Contains(b))
                 errors.Add($"Baud must be one of {string.Join(", ", ValidBauds)}.");
@@ -796,7 +838,10 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
             }
 
             bool reconnect = false;
+            if (transport is not null && transport != _cfg.Transport) { _cfg.Transport = transport; reconnect = true; }
             if (port is not null && port != _cfg.Port) { _cfg.Port = port; reconnect = true; }
+            if (tcpHost is not null && tcpHost != _cfg.TcpHost) { _cfg.TcpHost = tcpHost; reconnect = true; }
+            if (body.TcpPort is int tcpPort && tcpPort != _cfg.TcpPort) { _cfg.TcpPort = tcpPort; reconnect = true; }
             if (body.Baud is int baud && baud != _cfg.Baud) { _cfg.Baud = baud; reconnect = true; }
             if (body.StopBits is int sb && sb != _cfg.StopBits) { _cfg.StopBits = sb; reconnect = true; }
             if (addr is not null) { _cfg.Pw2AddrHex = addr; _amp?.SetPw2Addr(Convert.ToInt32(addr, 16)); }
@@ -826,7 +871,7 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
             // the wire keeps running at the old parameters.
             if (reconnect && _amp is { IsConnected: true })
             {
-                Note("info", $"Connection settings changed — reconnecting at {_cfg.Baud} baud.");
+                Note("info", $"Connection settings changed — reconnecting to {LinkTarget()}.");
                 _amp.Disconnect();
                 TryConnect();
             }
@@ -851,7 +896,7 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
         });
 
         // List COM ports so the UI can offer a picker.
-        endpoints.MapGet("ports", () => Results.Ok(System.IO.Ports.SerialPort.GetPortNames()));
+        endpoints.MapGet("ports", () => Results.Ok(SerialCivTransport.ListPorts()));
 
         // Amp circuit control. These never key TX.
         endpoints.MapPost("oper", () => AmpWrite(true));
@@ -1050,7 +1095,11 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
     private static Settings Sanitize(Settings s)
     {
         var d = new Settings();
+        var tr = (s.Transport ?? "").Trim().ToLowerInvariant();
+        s.Transport = tr == "tcp" ? "tcp" : "serial";
         if (string.IsNullOrWhiteSpace(s.Port)) s.Port = d.Port;
+        s.TcpHost = (s.TcpHost ?? "").Trim();
+        if (s.TcpPort < 1 || s.TcpPort > 65535) s.TcpPort = d.TcpPort;
         if (!ValidBauds.Contains(s.Baud)) s.Baud = d.Baud;
         if (s.StopBits != 1 && s.StopBits != 2) s.StopBits = d.StopBits;
         s.Pw2AddrHex = NormalizeAddr(s.Pw2AddrHex ?? "") ?? d.Pw2AddrHex;
@@ -1100,9 +1149,15 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
 
     public sealed class Settings
     {
+        // "serial": a local COM/tty port (Port/Baud/StopBits).
+        // "tcp":    a raw TCP socket to a serial server that owns the amp's
+        //           port (TcpHost/TcpPort); the server sets baud/framing.
+        public string Transport { get; set; } = "serial";
         public string Port { get; set; } = "COM10";
         public int Baud { get; set; } = 9600;
         public int StopBits { get; set; } = 1;
+        public string TcpHost { get; set; } = "";
+        public int TcpPort { get; set; } = TcpCivTransport.DefaultPort;
         public string Pw2AddrHex { get; set; } = "AA";
         public int RfInput { get; set; } = 0;          // 0 = INPUT1, 1 = INPUT2
         public bool BandFollow { get; set; } = true;
@@ -1117,7 +1172,8 @@ public sealed class Pw2BridgePlugin : IZeusPlugin, IBackendPlugin
     }
 
     private sealed record ConfigUpdate(
-        string? Port, int? Baud, int? StopBits, string? Pw2AddrHex, int? RfInput,
+        string? Transport, string? Port, int? Baud, int? StopBits, string? TcpHost, int? TcpPort,
+        string? Pw2AddrHex, int? RfInput,
         bool? BandFollow, bool? TxInhibit, bool? AutoConnect, string? TempUnit,
         double? MaxTemp, string? DefaultStby, int? PollMsIdle, int? PollMsTx, int? PeakWindowMs);
 

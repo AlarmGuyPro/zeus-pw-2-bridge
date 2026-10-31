@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 //
-// Serial transport + typed CI-V command set for the IC-PW2.
+// Typed CI-V command set for the IC-PW2 over any ICivTransport.
 //
-// Port of the CIVSerial class from the Python bridge. Talks to the amp over a
-// COM port (USB-serial -> the amp's 3.5mm [REMOTE AUX] jack, guide p.2), using
-// the framing/scaling in Pw2Civ. Windows-first: DTR/RTS are asserted because
-// the guide's wiring ties RTS->CTS (no hardware flow control).
+// Port of the CIVSerial class from the Python bridge. Talks to the amp using
+// the framing/scaling in Pw2Civ over a byte link (CivTransport.cs): a local
+// COM/tty port (USB-serial -> the amp's 3.5mm [REMOTE AUX] jack, guide p.2),
+// or a raw TCP socket to a serial server that owns that port. The class name
+// predates the TCP option and is kept so the plugin and harness don't churn.
 //
-// Threading: every method that touches the port takes _gate, so a poll and a
+// Threading: every method that touches the link takes _gate, so a poll and a
 // band-forward can't interleave on the wire. Read methods return null on
 // timeout/NAK; write methods return (ok, message).
 
 using System;
-using System.IO.Ports;
 using System.Text;
 using System.Threading;
 using Microsoft.Extensions.Logging;
@@ -29,9 +29,17 @@ public sealed class Pw2CivSerial : IDisposable
 
     private readonly object _gate = new();
     private readonly ILogger _log;
-    private SerialPort? _port;
+    private ICivTransport? _port;
 
     public byte Pw2Addr { get; private set; } = Pw2Civ.DefaultPw2Addr;
+
+    /// <summary>
+    /// Message from the most recent connect or I/O failure, or "" after a
+    /// successful connect. Lets the panel explain *why* the link dropped (for
+    /// example a serial server refusing a second client) instead of just
+    /// showing "disconnected".
+    /// </summary>
+    public string LastError { get; private set; } = "";
 
     public Pw2CivSerial(ILogger log) => _log = log;
 
@@ -40,38 +48,47 @@ public sealed class Pw2CivSerial : IDisposable
         get { lock (_gate) return _port is { IsOpen: true }; }
     }
 
+    /// <summary>Description of the current link for logs/status, or "" when not connected.</summary>
+    public string LinkDescription
+    {
+        get { lock (_gate) return _port?.Description ?? ""; }
+    }
+
     public void SetPw2Addr(int addr)
     {
         if (Pw2Civ.IsSafeAddr(addr))
             lock (_gate) Pw2Addr = (byte)addr;
     }
 
-    public (bool ok, string message) Connect(string portName, int baud = 9600, int stopBits = 1)
+    /// <summary>Connect over a local serial port.</summary>
+    public (bool ok, string message) Connect(string portName, int baud = 9600, int stopBits = 1) =>
+        Connect(() => new SerialCivTransport(portName, baud, stopBits));
+
+    /// <summary>Connect over raw TCP to a serial server that owns the amp's port.</summary>
+    public (bool ok, string message) ConnectTcp(string host, int port = TcpCivTransport.DefaultPort) =>
+        Connect(() => new TcpCivTransport(host, port));
+
+    /// <summary>
+    /// Open a new link, closing any existing one first. The factory throws on
+    /// failure; its message is returned to the caller for the panel/log.
+    /// </summary>
+    public (bool ok, string message) Connect(Func<ICivTransport> open)
     {
         lock (_gate)
         {
             try
             {
                 Close_NoLock();
-                var p = new SerialPort(portName, baud, Parity.None, 8,
-                    stopBits == 2 ? System.IO.Ports.StopBits.Two : System.IO.Ports.StopBits.One)
-                {
-                    ReadTimeout = 20,   // fine granularity; we loop to our own deadline
-                    WriteTimeout = 500,
-                    // Guide p.2: RTS tied to CTS, comms without flow control.
-                    Handshake = Handshake.None,
-                    DtrEnable = true,
-                    RtsEnable = true,
-                };
-                p.Open();
-                _port = p;
-                _log.LogInformation("CI-V connected {Port} @ {Baud} 8N{Stop}", portName, baud, stopBits);
+                _port = open();
+                LastError = "";
+                _log.LogInformation("CI-V connected {Link}", _port.Description);
                 return (true, "OK");
             }
             catch (Exception ex)
             {
                 _port = null;
-                _log.LogWarning("CI-V connect failed on {Port}: {Err}", portName, ex.Message);
+                LastError = ex.Message;
+                _log.LogWarning("CI-V connect failed: {Err}", ex.Message);
                 return (false, ex.Message);
             }
         }
@@ -88,7 +105,7 @@ public sealed class Pw2CivSerial : IDisposable
 
     private void Close_NoLock()
     {
-        try { if (_port is { IsOpen: true }) _port.Close(); } catch { /* ignore */ }
+        try { _port?.Close(); } catch { /* ignore */ }
         _port?.Dispose();
         _port = null;
     }
@@ -105,8 +122,8 @@ public sealed class Pw2CivSerial : IDisposable
             if (_port is not { IsOpen: true }) return Array.Empty<byte>();
             try
             {
-                try { _port.DiscardInBuffer(); } catch { /* ignore */ }
-                _port.Write(pkt, 0, pkt.Length);
+                _port.DiscardInput();
+                _port.Write(pkt);
 
                 if (!expectReply) return Array.Empty<byte>();
 
@@ -115,9 +132,8 @@ public sealed class Pw2CivSerial : IDisposable
                 var deadline = DateTime.UtcNow + ReadTimeout;
                 while (DateTime.UtcNow < deadline)
                 {
-                    int got;
-                    try { got = _port.Read(readChunk, 0, readChunk.Length); }
-                    catch (TimeoutException) { got = 0; }
+                    // 20 ms slices so a complete frame is noticed promptly.
+                    int got = _port.Read(readChunk, 20);
                     if (got > 0)
                     {
                         for (int k = 0; k < got; k++) buf.Add(readChunk[k]);
@@ -135,6 +151,7 @@ public sealed class Pw2CivSerial : IDisposable
             }
             catch (Exception ex)
             {
+                LastError = ex.Message;
                 _log.LogWarning("CI-V I/O error: {Err}", ex.Message);
                 Close_NoLock();
                 return Array.Empty<byte>();
@@ -198,7 +215,7 @@ public sealed class Pw2CivSerial : IDisposable
                 {
                     var wake = new byte[12];
                     Array.Fill(wake, Pw2Civ.Preamble);
-                    _port.Write(wake, 0, wake.Length);
+                    _port.Write(wake);
                 }
             }
             Thread.Sleep(150);

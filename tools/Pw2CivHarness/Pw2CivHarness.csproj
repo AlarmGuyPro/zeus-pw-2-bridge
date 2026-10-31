@@ -18,6 +18,7 @@
     <Compile Include="../../src/Pw2Bridge/Pw2CivProtocol.cs" Link="shared/Pw2CivProtocol.cs" />
     <Compile Include="../../src/Pw2Bridge/BandPlan.cs"       Link="shared/BandPlan.cs" />
     <Compile Include="../../src/Pw2Bridge/Pw2CivSerial.cs"   Link="shared/Pw2CivSerial.cs" />
+    <Compile Include="../../src/Pw2Bridge/CivTransport.cs"   Link="shared/CivTransport.cs" />
   </ItemGroup>
 
   <ItemGroup>

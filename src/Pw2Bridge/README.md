@@ -36,8 +36,20 @@ your PC to the amplifier's **[REMOTE AUX]** jack (a 3.5 mm mono plug; wire per
 the IC-PW2 CI-V Reference Guide — RTS tied to CTS, no flow control). The plugin
 talks to that COM port.
 
-In the panel's **Settings**, set the COM port, baud, and CI-V address (default
-AA), then Connect. These are remembered.
+In the panel's **Settings**, choose the connection, set the CI-V address
+(default AA), then Connect. These are remembered.
+
+- **Local serial port** — the cable is plugged into this PC. Pick the COM port
+  and baud. This is the default and needs nothing else.
+- **Serial server (TCP)** — the cable is plugged into another machine (a
+  Raspberry Pi, a second PC, the station hub) that shares the port on the LAN
+  as a raw TCP socket. Enter that machine's name or IP and the TCP port
+  (default 4001). The server owns the baud rate, so set it there. Any
+  ser2net-style "raw" serial server works. **One client at a time:** CI-V can't
+  be shared, so if another workstation already holds the amp, the server closes
+  our connection and the panel shows "connection closed by the serial server";
+  with auto-connect on, the plugin keeps retrying every few seconds and picks
+  the amp up as soon as it's free.
 
 ### Baud rate — set it explicitly to 19200 for best speed
 
@@ -54,8 +66,8 @@ baud. Two things to know:
   meters). Always set both the **amp** and the **plugin** to the *same explicit*
   baud. If in doubt, 9600 explicit works everywhere; 19200 explicit is faster.
 
-Changing the baud (or port) in Settings now reconnects automatically so the new
-rate takes effect immediately.
+Changing the connection settings reconnects automatically so the change takes
+effect immediately.
 
 > **Why serial and not the amp's Ethernet port?** The IC-PW2's LAN port uses
 > Icom's proprietary RS-PW2 protocol with an authenticated, encrypted login that
@@ -168,8 +180,11 @@ can confirm which build is loaded.
 
 ## Known limitations
 
-- **Serial only** (see the note above about the LAN port).
-- **Windows (win-x64)** for now; Linux/Raspberry Pi packaging is possible later.
+- **Serial CI-V only** (see the note above about the LAN port). The TCP option
+  still rides on the amp's serial CI-V; it just moves the cable to another box.
+- **Windows (win-x64)** for the local-serial path for now. The TCP path has no
+  platform-specific code, so it is the route for Linux/macOS workstations until
+  per-platform serial packaging exists.
 - Metering is sampled/polled as described above.
 - A drive-level interlock (auto-STBY if the radio's drive exceeds a set limit) is
   planned but depends on Zeus exposing drive level to plugins; it is not yet

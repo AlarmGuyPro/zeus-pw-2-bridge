@@ -6,8 +6,10 @@ Zeus's radio state.
 
 - **Plugin ID:** `com.kq4wlr.zeus.pw2bridge`
 - **Author:** KQ4WLR
-- **Current version:** 1.1.2 (released 2026-10-12, not yet in the catalog;
-  the catalog still offers 1.1.0, see the release history)
+- **Current version:** 1.2.0 (in progress on branch `feature/tcp-transport`,
+  2026-10-31: serial-server transport; see §2 and §9). 1.1.2 released
+  2026-10-12, not yet in the catalog; the catalog still offers 1.1.0, see the
+  release history
 - **SDK:** ABI 1, minVersion 1.5.0
 - **Platform:** Windows (win-x64) first; Linux/Pi possible later (see Porting)
 - **License intent:** GPL-2.0-or-later
@@ -194,9 +196,17 @@ src/Pw2Bridge/
                       BCD decoders, meter calibration curves. No I/O, no Zeus.
                       Unit-testable in isolation.
   BandPlan.cs         Frequency -> band-name mapping incl. the 60m FCC split.
-  Pw2CivSerial.cs     SerialPort wrapper. All the typed CI-V commands
+  CivTransport.cs     ICivTransport (Write / Read-with-timeout / DiscardInput /
+                      Close) and its two implementations: SerialCivTransport
+                      (local COM/tty, the original behaviour) and
+                      TcpCivTransport (raw TCP to a serial server, 1.2.0).
+                      Neither locks; Pw2CivSerial serialises all calls.
+  Pw2CivSerial.cs     The typed CI-V command set over an ICivTransport
                       (read meters / set band / OPER-STBY / input / antenna /
-                      tuner / power). Depends on Pw2CivProtocol + BandPlan.
+                      tuner / power) plus the 150 ms reply-frame read loop.
+                      Depends on Pw2CivProtocol + BandPlan. Name predates the
+                      TCP option; kept to avoid churn. Exposes LastError and
+                      LinkDescription for the panel.
   Pw2BridgePlugin.cs  The Zeus entrypoint (IZeusPlugin + IBackendPlugin).
                       Owns the serial link, subscribes to radio state for
                       band-follow, runs the meter poll loop, enforces the
@@ -216,11 +226,12 @@ src/Pw2Bridge/
                       zeus-community-features/templates/hello-world.
   README.md           Operator guide (packaged into the ZIP).
 
-tools/Pw2CivHarness/  Standalone console app. Shares the three protocol/serial
-                      source files. Two modes: `selftest` (no hardware,
-                      asserts against the CI-V guide) and `serial` (interactive
-                      session with the real amp). This is how the protocol was
-                      proven and how to debug the wire.
+tools/Pw2CivHarness/  Standalone console app. Shares the four protocol/serial/
+                      transport source files. Two modes: `selftest` (no
+                      hardware, asserts against the CI-V guide and runs the TCP
+                      transport against an in-process fake serial server) and
+                      `serial` (interactive session with the real amp). This is
+                      how the protocol was proven and how to debug the wire.
 
 sdk/                  Vendored copy of the Zeus SDK contracts (required so the
                       feature builds standalone). Do not edit.
@@ -493,9 +504,43 @@ manifest verified, ABI compatibility, archive-safety. Nothing lands unverified.
 - Published: 1.0.0 submitted as catalog PR #8 (see §0). Not yet done:
   Linux/Pi packaging.
 
-## 9. Porting to Linux / Raspberry Pi (future)
+## 9. Linux / Raspberry Pi / multi-workstation (1.2.0 direction)
 
-Code is portable; it's a packaging exercise. Add the Linux `System.IO.Ports`
-native runtimes to the package, expose a serial-device name setting
-(`/dev/ttyUSB0` vs `COM10`), set `platforms` accordingly, and rebuild/package
-per platform per CONTRIBUTING §2.7.
+Decided 2026-10-31 (operator now has a Linux workstation alongside the Windows
+one, and other serial gadgets such as the tuner):
+
+**Transport split (done, 1.2.0).** `Pw2CivSerial` talks to an `ICivTransport`.
+`Settings.Transport` is `"serial"` (local port: `Port`/`Baud`/`StopBits`) or
+`"tcp"` (`TcpHost`/`TcpPort`, default 4001, raw socket, server sets framing).
+The TCP path uses only `System.Net.Sockets`, so it has no native dependency and
+runs on any OS the host runs on. `plugin.json` now declares `NetworkAccess` and
+`permissions.network: true` for it (flag to the reviewer: the only outbound
+connection is to the operator-configured serial server). A serial server that
+is busy (another station holds the amp) refuses by closing the socket; the
+plugin reports `LastError` in `/status` (`linkError`) and in the panel subtitle,
+notes it once in the event log (`NoteLinkErrorOnce`), and auto-recovery keeps
+retrying every ~3 s so the amp is picked up when it frees.
+
+**Station hub (next).** A small C# service (shared CI-V/transport code,
+published as a self-contained single file for linux-arm64 / linux-x64 /
+win-x64) that owns the USB serial devices on one box and exposes each as a raw
+TCP port, one client at a time, with a status API (which device is held by
+whom), mDNS discovery, and a web page for naming devices by their
+`/dev/serial/by-id` identity. Knows nothing about the amp or tuner; apps pick a
+device by name. Three deployment shapes: no hub (direct serial, single PC);
+the PC with the cable runs the hub ("share this amp" toggle in the plugin,
+in-process); or a Linux box (the operator's existing digipeater Pi is the
+candidate; its future status display should read hub state from the same
+status API). Install/update to a Linux box over SSH from a button in the
+plugin, rather than a custom Pi image.
+
+**Local-serial on Linux (deferred).** Still a packaging exercise: ship the
+Linux `System.IO.Ports` native runtime, let `Port` be `/dev/ttyUSB0`, set
+`platforms` per build. With the TCP path available this is lower priority;
+coordinate with KB2UKA (catalog `platforms` handling, §0 open items).
+
+**Testing without hardware.** `pw2civ selftest` includes loopback TCP cases
+(normal reply, server refusal, nobody listening). In the sandbox used to write
+1.2.0 NuGet was unreachable; the sources were compiled with a stub
+`System.IO.Ports` to check the build, so the operator's Windows build is the
+first real-package build of each change.

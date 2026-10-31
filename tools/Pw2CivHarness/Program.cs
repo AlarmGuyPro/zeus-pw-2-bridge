@@ -141,6 +141,9 @@ static class SelfTest
         Check("60m NOT amp-supported (no CI-V code)",
             BandPlan.IsAmpSupported("60m").ToString(), "False");
 
+        // --- TCP transport against a loopback fake serial server ---
+        TcpLoopback();
+
         Console.WriteLine($"\n{_passed} passed, {_failed} failed.");
         return _failed == 0 ? 0 : 1;
     }
@@ -151,6 +154,79 @@ static class SelfTest
         if (ok) _passed++; else _failed++;
         Console.WriteLine($"  [{(ok ? "PASS" : "FAIL")}] {name}");
         if (!ok) Console.WriteLine($"         got:  {got}\n         want: {want}");
+    }
+
+    /// <summary>
+    /// Exercise TcpCivTransport end-to-end without hardware: a fake serial
+    /// server on 127.0.0.1 that behaves like a CI-V bus (echoes the command,
+    /// then answers), followed by one that refuses the client the way a hub
+    /// does when another station holds the port.
+    /// </summary>
+    private static void TcpLoopback()
+    {
+        using var factory = LoggerFactory.Create(lb => lb.SetMinimumLevel(LogLevel.None));
+        var log = factory.CreateLogger("tcp");
+
+        // Server 1: echo + reply OPER to a 1A 09 read, NAK anything else.
+        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        int port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+        var server = Task.Run(async () =>
+        {
+            using var c = await listener.AcceptTcpClientAsync();
+            using var ns = c.GetStream();
+            var buf = new byte[64];
+            int n = await ns.ReadAsync(buf);
+            var cmd = buf[..n];
+            await ns.WriteAsync(cmd); // bus echo
+            await Task.Delay(10);     // amp think time
+            bool isAmpRead = n >= 7 && cmd[4] == 0x1A && cmd[5] == 0x09;
+            var reply = isAmpRead
+                ? FromHex("FE FE E0 AA 1A 09 01 FD")
+                : FromHex("FE FE E0 AA FA FD");
+            await ns.WriteAsync(reply);
+            await Task.Delay(50);     // let the client finish reading before we close
+        });
+
+        var amp = new Pw2CivSerial(log);
+        var (ok, msg) = amp.ConnectTcp("127.0.0.1", port);
+        Check("tcp connect to loopback server", ok ? "OK" : msg, "OK");
+        Check("tcp link description", amp.LinkDescription, $"tcp://127.0.0.1:{port}");
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var state = amp.ReadAmpCircuit();
+        sw.Stop();
+        Check("tcp 1A 09 read returns OPER", state?.ToString() ?? "null", "1");
+        Check("tcp read returned on frame, not timeout (<120ms)", (sw.ElapsedMilliseconds < 120).ToString(), "True");
+        server.Wait(2000);
+        amp.Disconnect();
+        listener.Stop();
+
+        // Server 2: accept then close at once (hub refusing a second client).
+        var refuser = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        refuser.Start();
+        int rport = ((System.Net.IPEndPoint)refuser.LocalEndpoint).Port;
+        var rtask = Task.Run(async () =>
+        {
+            using var c = await refuser.AcceptTcpClientAsync();
+            var junk = new byte[64];
+            _ = await c.GetStream().ReadAsync(junk); // drain the command so the close is a FIN, not a RST
+            c.Close();
+        });
+        var amp2 = new Pw2CivSerial(log);
+        var (ok2, _) = amp2.ConnectTcp("127.0.0.1", rport);
+        Check("tcp refused: socket accepts", ok2.ToString(), "True");
+        var st2 = amp2.ReadAmpCircuit();
+        Check("tcp refused: read yields null", st2?.ToString() ?? "null", "null");
+        Check("tcp refused: link marked down", amp2.IsConnected.ToString(), "False");
+        Check("tcp refused: error names the server close", amp2.LastError.Contains("closed by the serial server").ToString(), "True");
+        rtask.Wait(2000);
+        refuser.Stop();
+
+        // Nobody listening: connect must fail cleanly, not hang.
+        var amp3 = new Pw2CivSerial(log);
+        var (ok3, msg3) = amp3.ConnectTcp("127.0.0.1", rport);
+        Check("tcp nobody listening: connect fails", ok3.ToString(), "False");
+        Check("tcp nobody listening: has a message", (msg3.Length > 0).ToString(), "True");
     }
 
     private static string Hex(byte[] b) => string.Join(' ', Array.ConvertAll(b, x => x.ToString("X2")));
